@@ -48,17 +48,25 @@ function count(query: string): number {
   return Number(last);
 }
 
-const ORG_A = "cccccccc-0000-4000-8000-000000000001";
-const ORG_B = "cccccccc-0000-4000-8000-000000000002";
-const CONTACT_A = "cccccccc-1111-4000-8000-000000000001";
-const CONTACT_B = "cccccccc-1111-4000-8000-000000000002";
-const SESS_A = "cccccccc-2222-4000-8000-000000000001";
-const SESS_B = "cccccccc-2222-4000-8000-000000000002";
-const CONV_A = "cccccccc-3333-4000-8000-000000000001";
-const PIPE_A = "cccccccc-4444-4000-8000-000000000001";
-const STAGE_A = "cccccccc-5555-4000-8000-000000000001";
-const LEAD_A = "cccccccc-6666-4000-8000-000000000001";
-const MSG_A = "cccccccc-7777-4000-8000-000000000001";
+// ⚠️ NAMESPACE PRÓPRIO (`c07e0000-`), e não o `cccccccc-` de `gov-helpers.ts`.
+// A suíte de invariantes toda bate no MESMO Postgres, com estado global entre
+// arquivos (`fileParallelism: false` não isola dado, só ordena). Com o prefixo
+// antigo, `ORG_A` ERA a `GOV_ORG` e o contato daqui ocupava, na mesma
+// organização, o telefone que `automation-send-whatsapp` usa — o
+// `uniq_contacts_org_phone` engolia o `on conflict do nothing` de lá e o contato
+// simplesmente não nascia, derrubando aquele arquivo com um erro de FK que não
+// dizia nada sobre este teste.
+const ORG_A = "c07e0000-0000-4000-8000-000000000001";
+const ORG_B = "c07e0000-0000-4000-8000-000000000002";
+const CONTACT_A = "c07e0000-1111-4000-8000-000000000001";
+const CONTACT_B = "c07e0000-1111-4000-8000-000000000002";
+const SESS_A = "c07e0000-2222-4000-8000-000000000001";
+const SESS_B = "c07e0000-2222-4000-8000-000000000002";
+const CONV_A = "c07e0000-3333-4000-8000-000000000001";
+const PIPE_A = "c07e0000-4444-4000-8000-000000000001";
+const STAGE_A = "c07e0000-5555-4000-8000-000000000001";
+const LEAD_A = "c07e0000-6666-4000-8000-000000000001";
+const MSG_A = "c07e0000-7777-4000-8000-000000000001";
 
 beforeAll(() => {
   sql(`

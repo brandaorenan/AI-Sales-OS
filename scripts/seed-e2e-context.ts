@@ -22,17 +22,18 @@ import { createClient } from "@supabase/supabase-js";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-const envFile = fs.readFileSync(path.join(process.cwd(), ".env.local"), "utf8");
-const env: Record<string, string> = {};
-for (const line of envFile.split("\n")) {
-  const m = line.match(/^([A-Z_]+)=(.*)$/);
-  if (m) env[m[1]!] = m[2]!.replace(/^"(.*)"$/, "$1");
-}
+import { anunciarDestino, credenciaisSupabaseDeTeste } from "./lib/env-de-teste";
 
-const SUPABASE_URL = env.NEXT_PUBLIC_SUPABASE_URL!;
-const SERVICE_ROLE = env.SUPABASE_SERVICE_ROLE_KEY!;
+// `process.env` VENCE `.env.local`: num checkout de trabalho o arquivo aponta
+// para PRODUÇÃO, e ler o disco direto foi como a org `e2e-test-org` foi parar
+// no banco real. `anunciarDestino` deixa visível contra quem o seed escreveu.
+const credenciais = credenciaisSupabaseDeTeste();
+anunciarDestino("seed-e2e-context", credenciais);
+
+const SUPABASE_URL = credenciais.url;
+const SERVICE_ROLE = credenciais.serviceRole;
 if (!SUPABASE_URL || !SERVICE_ROLE) {
-  throw new Error("Missing NEXT_PUBLIC_SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY in .env.local");
+  throw new Error("Faltam NEXT_PUBLIC_SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY no ambiente ou em .env.local");
 }
 
 const admin = createClient(SUPABASE_URL, SERVICE_ROLE, {

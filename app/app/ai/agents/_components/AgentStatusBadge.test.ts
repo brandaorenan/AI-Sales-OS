@@ -24,17 +24,25 @@ describe("deriveAgentStatus", () => {
     expect(deriveAgentStatus({ ...base, published_version_id: "v1" } as AgentRow)).toBe("published");
   });
 
-  it("com versão publicada e inativo é PAUSADO (rag_bot)", () => {
+  it("com versão publicada e inativo é PAUSADO (rag_bot legado)", () => {
     expect(deriveAgentStatus({ ...base, published_version_id: "v1", is_active: false } as AgentRow)).toBe("paused");
   });
 
-  it("mcp_agent com versão publicada é PUBLICADO mesmo com is_active=false (dado órfão)", () => {
-    // pauseAgentAction nunca escreve is_active para mcp_agent (só limpa
-    // published_version_id); um is_active=false aqui é lixo de antes dessa
-    // separação existir e não pode fazer o badge mentir "Pausado" num agente
-    // que o runtime trata como publicado e que de fato responde e gasta.
+  it("mcp_agent publicado é PUBLICADO mesmo com is_active false", () => {
+    // `is_active` é semântica do rag_bot legado. Para mcp_agent os dois runtimes
+    // (lib/ai/dispatcher e lib/agent-engine/agent/agent-config) resolvem o agente
+    // só por published_version_id + archived_at — nenhum dos dois lê is_active.
+    // Lendo a coluna aqui, o badge dizia "Pausado" para um agente que está no ar,
+    // e o menu não oferecia saída: "Despausar" fica disabled para mcp_agent e
+    // unpauseAgentAction recusa com publish_required. Republicar também não
+    // liberava, porque fn_publish_ai_agent_version não toca is_active.
     expect(
-      deriveAgentStatus({ ...base, kind: "mcp_agent", published_version_id: "v1", is_active: false } as AgentRow),
+      deriveAgentStatus({
+        ...base,
+        kind: "mcp_agent",
+        published_version_id: "v1",
+        is_active: false,
+      } as AgentRow),
     ).toBe("published");
   });
 

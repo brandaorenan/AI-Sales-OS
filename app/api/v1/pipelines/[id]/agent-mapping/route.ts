@@ -88,11 +88,34 @@ interface EtapaDoMapaComPolitica extends EtapaDoMapa {
  * o tenant escolheria etapas numa lista embaralhada. `position` não entra no
  * `select` porque o PostgREST ordena por coluna que não foi projetada.
  */
+/**
+ * A etapa como ESTA rota a lê: a régua do mapeamento mais a autoria da última
+ * mudança de configuração.
+ *
+ * ⚠️ A AUTORIA NÃO ENTRA EM `EtapaDoMapa`. Aquele tipo é o contrato do
+ * MAPEAMENTO (o que decide qual etapa representa qual passo do assistente), e
+ * `validarMapeamento`/`diffParaUpdates` trabalham em cima dele. Autoria é sobre
+ * quem mexeu, não sobre o que a etapa significa — misturar as duas coisas faria
+ * a regra do mapeamento carregar um campo que ela nunca lê.
+ */
+type EtapaComAutoria = EtapaDoMapa & {
+  last_change_actor_kind: string | null;
+  last_change_at: string | null;
+};
+
+/**
+ * O que ESTA rota projeta: régua do mapeamento + política de contexto + autoria.
+ * As três coisas vêm da mesma leitura de `crm_stages` porque a tela desenha as
+ * três juntas — separar viraria round-trip por render e um caminho a mais para
+ * a lista e a configuração divergirem.
+ */
+type EtapaDaRota = EtapaDoMapaComPolitica & EtapaComAutoria;
+
 async function lerFunil(
   supabase: Awaited<ReturnType<typeof createClient>>,
   orgId: string,
   pipelineId: string,
-): Promise<{ etapas: EtapaDoMapaComPolitica[] } | null> {
+): Promise<{ etapas: EtapaDaRota[] } | null> {
   const { data: pipeline, error: pipeErr } = await supabase
     .from("crm_pipelines")
     .select("id")
@@ -104,8 +127,11 @@ async function lerFunil(
 
   const { data, error } = await supabase
     .from("crm_stages")
+    // A autoria entra na MESMA leitura que a tela de etapas já faz. Uma segunda
+    // consulta só para ela seria um round-trip por render numa tela de
+    // configuração — e um caminho a mais para a lista e a autoria divergirem.
     .select(
-      "id, name, is_won, is_lost, agent_stage_hint, resets_context, context_reset_after_days",
+      "id, name, is_won, is_lost, agent_stage_hint, resets_context, context_reset_after_days, last_change_actor_kind, last_change_at",
     )
     .eq("organization_id", orgId)
     .eq("pipeline_id", pipelineId)
@@ -113,7 +139,7 @@ async function lerFunil(
     .order("position", { ascending: true });
   if (error) throw new Error(error.message);
 
-  return { etapas: (data ?? []) as unknown as EtapaDoMapaComPolitica[] };
+  return { etapas: (data ?? []) as unknown as EtapaDaRota[] };
 }
 
 /** Os sete passos sempre presentes: quem lê não precisa saber quais faltam. */
@@ -131,7 +157,7 @@ function mapaDeEtapas(etapas: EtapaDoMapa[]): Record<LeadStage, string | null> {
   return mapa;
 }
 
-function corpo(etapas: EtapaDoMapaComPolitica[]) {
+function corpo(etapas: EtapaDaRota[]) {
   return {
     etapas: etapas.map((e) => ({
       id: e.id,
@@ -140,6 +166,8 @@ function corpo(etapas: EtapaDoMapaComPolitica[]) {
       is_lost: e.is_lost,
       resets_context: e.resets_context,
       context_reset_after_days: e.context_reset_after_days,
+      last_change_actor_kind: e.last_change_actor_kind ?? null,
+      last_change_at: e.last_change_at ?? null,
     })),
     mapeamento: mapaDeEtapas(etapas),
   };

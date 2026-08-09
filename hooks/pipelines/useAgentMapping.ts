@@ -27,6 +27,9 @@ export interface EtapaDoFunil {
   /** Política de expiração do contexto do agente nesta etapa (Spec 16 §9.1). */
   resets_context: boolean;
   context_reset_after_days: number;
+  /** Quem mexeu nesta etapa por último (migration 0101). `null` antes dela. */
+  last_change_actor_kind?: string | null;
+  last_change_at?: string | null;
 }
 
 /** Os sete passos sempre presentes; `null` = "não mover o card". */

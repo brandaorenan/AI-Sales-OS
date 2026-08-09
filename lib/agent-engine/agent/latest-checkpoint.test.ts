@@ -13,6 +13,9 @@ const BASE_ROW: LeadCheckpointRow = {
   objections: [],
   next_action: 'ligar amanhã',
   rolling_summary: 'cliente pediu 5m de guipir preto',
+  // NULL = o modelo não declarou nada neste turno (Spec 16 §5) — o estado
+  // honesto de um checkpoint anterior à coluna existir.
+  declaracao: null,
   created_at: new Date('2026-08-01T10:00:00.000Z'),
 };
 

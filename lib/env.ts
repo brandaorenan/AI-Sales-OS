@@ -87,6 +87,11 @@ const schema = z.object({
   // when AI_GATEWAY_API_KEY is absent, so production boot must not be fatal.
   AI_GATEWAY_API_KEY: z.string().optional().default(""),
   AI_GATEWAY_BASE_URL: z.string().optional().default(""),
+  // OpenRouter: alternativa ao gateway da Vercel, compatível com a API da
+  // OpenAI. Opcional — sem ela nada muda; com ela o chat passa a ser roteado
+  // por lá. Ver resolveLanguageModel() em lib/ai/gateway.ts.
+  OPENROUTER_API_KEY: z.string().optional().default(""),
+  OPENROUTER_BASE_URL: z.string().optional().default(""),
   VERCEL_AI_GATEWAY_URL: z.string().optional().default(""),
   ANTHROPIC_API_KEY: z.string().optional().default(""),
   OPENAI_API_KEY: z.string().optional().default(""),
@@ -188,9 +193,18 @@ export const env = parsed.data;
 
 // Soft warning for env-gated AI keys (worker degrades gracefully but operators
 // should know when the bot is silent for config reasons).
-if (!env.AI_GATEWAY_API_KEY && !env.ANTHROPIC_API_KEY) {
+// `OPENROUTER_API_KEY` entra na condição porque `isAiGatewayConfigured()`
+// (lib/ai/gateway.ts) e `resolveLanguageModel` a tratam como configuração
+// VÁLIDA. Sem ela aqui, a instalação que escolhe OpenRouter — a primeira opção
+// que o `install.sh` oferece — gritava no primeiro boot que a IA ia ficar muda,
+// e ela não ia. O operador ia atrás de um problema que não existe, ou pior:
+// cadastrava uma chave da Anthropic que não precisava, só para calar o aviso.
+// O texto era verdadeiro enquanto a Anthropic era a única chave que o
+// instalador pedia; o menu novo o tornou falso.
+if (!env.AI_GATEWAY_API_KEY && !env.ANTHROPIC_API_KEY && !env.OPENROUTER_API_KEY) {
   console.warn(
-    "[env] No AI_GATEWAY_API_KEY or ANTHROPIC_API_KEY set — ai-response-worker will skip with reason='ai_gateway_key_missing'.",
+    "[env] Nenhuma chave de IA configurada (AI_GATEWAY_API_KEY, ANTHROPIC_API_KEY ou OPENROUTER_API_KEY) — " +
+      "o agente vai pular toda resposta com reason='ai_gateway_key_missing'.",
   );
 }
 if (!env.OPENAI_API_KEY) {

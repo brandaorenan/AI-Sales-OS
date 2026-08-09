@@ -262,6 +262,10 @@ describe("GET /api/v1/pipelines/[id]/agent-mapping", () => {
     // oferecida — o board não a mostra e o índice único do banco a ignora, então
     // escolhê-la seria um mapeamento invisível.
     expect(body.data.etapas.map((e) => e.id)).toEqual(["e1", "e2", "e3", "e4"]);
+    // A autoria viaja junto (migration 0101) e é `null` na fixture, que é o
+    // estado honesto de uma etapa anterior à coluna. Fica no `toEqual` exato de
+    // propósito: é o que impede a projeção de crescer sem ninguém decidir — e a
+    // política de contexto (Spec 16 §9.1) viaja na mesma projeção.
     expect(body.data.etapas[0]).toEqual({
       id: "e1",
       name: "Novo",
@@ -269,6 +273,8 @@ describe("GET /api/v1/pipelines/[id]/agent-mapping", () => {
       is_lost: false,
       resets_context: false,
       context_reset_after_days: 7,
+      last_change_actor_kind: null,
+      last_change_at: null,
     });
 
     expect(body.data.mapeamento).toEqual(
