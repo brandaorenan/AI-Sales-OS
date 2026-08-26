@@ -9,6 +9,7 @@ import { fail, ok } from "@/lib/api/wrappers";
 import { loadAuthUser, resolveActiveOrg } from "@/lib/auth/server";
 import { listConversationsQuerySchema } from "@/lib/schemas";
 import { createClient } from "@/lib/supabase/server";
+import { comNomeDoAtendente } from "@/lib/users/com-nome-do-atendente";
 
 import { listConversationsHandler } from "./_handler";
 
@@ -35,7 +36,14 @@ export async function GET(req: NextRequest): Promise<Response> {
   const url = new URL(req.url);
   const qsParsed = listConversationsQuerySchema.safeParse({
     status: url.searchParams.get("status") ?? undefined,
+    exclude_finished: url.searchParams.get("exclude_finished") === "true" ? true : undefined,
     assigned_to: url.searchParams.get("assigned_to") ?? undefined,
+    // O `tag` era o único param que o schema aceitava, o hook serializava e o
+    // handler implementava — e que esta linha não lia. A cadeia rompia AQUI, no
+    // meio: `InboxFilters` mostra o select "Filtrar por tag" sempre que a org tem
+    // vocabulário, o browser manda `?tag=vip`, e a lista voltava inteira, sem erro.
+    // Achado por @jmpo, no cabeçalho do teste que ele escreveu no PR #199.
+    tag: url.searchParams.get("tag") ?? undefined,
     channel_session_id: url.searchParams.get("channel_session_id") ?? undefined,
     search: url.searchParams.get("search") ?? undefined,
     cursor: url.searchParams.get("cursor") ?? undefined,
@@ -58,7 +66,14 @@ export async function GET(req: NextRequest): Promise<Response> {
       },
       qsParsed.data,
     );
-    return ok(conversations, { requestId, meta: { cursor, has_more } });
+    // O nome de quem atende entra AQUI, na borda HTTP, e não no handler: o
+    // handler é compartilhado com as tools MCP, que já resolvem o nome por conta
+    // própria (`lib/mcp/tools/conversations.ts`) — enriquecer lá faria a mesma
+    // leitura duas vezes por chamada do agente.
+    return ok(await comNomeDoAtendente(conversations), {
+      requestId,
+      meta: { cursor, has_more },
+    });
   } catch (err) {
     if (err instanceof ApiError) {
       return fail(err.code, err.message, err.status, { requestId });

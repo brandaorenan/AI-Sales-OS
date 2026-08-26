@@ -21,9 +21,14 @@
 import { z } from 'zod';
 import type pg from 'pg';
 
+import { expectativaDeAtendimento } from '@/lib/escalacao/disponibilidade';
+import { ehOptOutProvavel } from '@/lib/opt-out/deteccao';
+import { emitAgentActivityForContact } from '@/lib/leads/agent-activity';
+
 import type { Logger } from '../obs/logger';
 import { cancelPendingCronsForLead } from '../cron/scheduler';
 import { findForbiddenKey, zodIssuesSummary } from './lead-state';
+import { renderDeclaracaoParaHumano, type DeclaracaoDoTurno } from './declaracao';
 
 /** Postgres `infinity`: o bot nunca reassume após handoff. */
 const SILENCE_INFINITY = 'infinity';
@@ -58,57 +63,19 @@ export function detectHumanHandoffRequest(message: string): boolean {
   return HUMAN_HANDOFF_PATTERNS.some((re) => re.test(normalized));
 }
 
-/**
- * Palavra-chave de opt-out enviada SOZINHA (mensagem inteira = a palavra) — a convenção
- * universal de descadastro em canais de mensagem. Comparação sobre o texto normalizado
- * e trimado (sem acento/pontuação de borda) para não vetar frases que só CONTÊM a palavra
- * ("vou parar por aqui, valeu" não casa; "PARAR" sozinho casa).
- */
-const OPTOUT_KEYWORDS: ReadonlySet<string> = new Set([
-  'stop',
-  'parar',
-  'pare',
-  'sair',
-  'cancelar',
-  'descadastrar',
-  'remover',
-  'unsubscribe',
-]);
 
 /**
- * Frases PT-BR de opt-out AMBÍGUO ("para de me mandar isso", "não quero mais receber",
- * "me tira da lista"): não são bloqueio formal no CRM, mas na dúvida tratamos como STOP
- * (F4-07). CONSERVADORAS o bastante para não silenciar um lead vivo por engano, mas a
- * política é "na dúvida, PARA e escala" — o humano confirma o is_blocked real no CRM.
- * Rodam sobre o texto normalizado (sem acento).
- */
-const AMBIGUOUS_OPTOUT_PATTERNS: readonly RegExp[] = [
-  /\bpar(?:a|e|em)\s+de\s+me\s+(?:mandar|manda|mande|enviar|envia|envie|perturbar|encher)\b/,
-  // "receber" seguido de um CANAL (ligação/chamada/telefonema) é troca-de-canal, não opt-out:
-  // "não quero receber ligação, só whatsapp" QUER continuar no WhatsApp — não silenciar.
-  /\bnao\s+(?:quero|desejo|gostaria)\s+(?:de\s+)?(?:mais\s+)?receber\b(?!\s+(?:ligacao|ligacoes|chamada|chamadas|telefonema|telefonemas|telefone)\b)/,
-  /\bnao\s+quero\s+receber\s+mais\b/,
-  /\bnao\s+me\s+(?:mande|manda|mandem|envie|envia|enviem)\s+mais\b/,
-  /\bme\s+(?:tira|tire|tirem|remove|remova|removam|retira|retire|exclui|exclua)\s+(?:da|dessa|desta|de\s+sua|da\s+sua)\s+lista\b/,
-  /\bsair\s+da\s+lista\b/,
-  /\bcancelar?\s+(?:a\s+)?inscricao\b/,
-  /\bme\s+descadastr\w*\b/,
-];
-
-/**
- * True se a última mensagem do lead SUGERE opt-out (palavra-chave sozinha OU frase
- * ambígua). Sinal CONSERVADOR: na dúvida vira STOP + escala à inbox (F4-07). NÃO é a
- * fonte da verdade (o CRM/is_blocked é); serve para PARAR de responder já e alertar o
- * humano, que confirma o bloqueio real.
+ * True se a última mensagem do lead SUGERE opt-out. A regra mora em
+ * `lib/opt-out/deteccao.ts` — a MESMA que a ingestão usa para gravar o bloqueio,
+ * e é o ponto: enquanto eram duas, o runtime era o lado calibrado e a ingestão
+ * bloqueava paciente que só perguntou como parar a dor.
+ *
+ * Aqui vale o nível PROVÁVEL (inequívoco + ambíguo), e não o inequívoco: este
+ * sinal só para de responder e escala à inbox — não silencia ninguém para
+ * sempre. Quem tem esse poder é a pessoa que confirma o bloqueio no CRM.
  */
 export function detectAmbiguousOptOut(message: string): boolean {
-  const trimmed = message.trim();
-  if (trimmed === '') return false;
-  const normalized = normalize(trimmed);
-  // palavra-chave isolada: só letras (remove pontuação de borda como "STOP." / "SAIR!")
-  const bareWord = normalized.replace(/[^a-z]/gu, '');
-  if (OPTOUT_KEYWORDS.has(bareWord)) return true;
-  return AMBIGUOUS_OPTOUT_PATTERNS.some((re) => re.test(normalized));
+  return ehOptOutProvavel(message);
 }
 
 /**
@@ -196,6 +163,37 @@ export async function performHumanHandoff(
     ],
   );
 
+  // (e) A IDA na linha do tempo do NEGÓCIO. `triggerHandoff` (o caminho do CRM)
+  // já gravava `handoff_triggered`; este caminho — o do harness e o do "Assumir
+  // eu" dos casos — não gravava nada. Metade das passagens era invisível no
+  // dossiê do cliente, e quem lesse a timeline veria a volta sem a ida.
+  //
+  // O `reason` é FIXO de propósito: `opts.reason` pode ser o texto livre que o
+  // atendente escreveu ao escalar, e esta linha aparece na tela e no export de
+  // LGPD (regra do activity-emitter: o porquê é legível, sem PII).
+  //
+  // Try/catch porque a timeline não pode derrubar a operação que ela descreve —
+  // mesma disciplina fire-and-forget do emissor da API.
+  try {
+    const roteou = await emitAgentActivityForContact({
+      pool: db,
+      organizationId: ids.tenantId,
+      contactId: ids.leadId,
+      type: 'handoff_triggered',
+      sourceModule: 'human-handoff',
+      sourceId: ids.conversationId,
+      reason: 'Atendimento passado para uma pessoa',
+      payload: { conversation_id: ids.conversationId },
+    });
+    if (!roteou.routed) {
+      opts.log.warn('handoff: atividade não roteada para um negócio', { reason: roteou.reason });
+    }
+  } catch (err) {
+    opts.log.warn('handoff: atividade da passagem não foi gravada', {
+      error: err instanceof Error ? err.message.slice(0, 200) : 'erro desconhecido',
+    });
+  }
+
   // PII fora do log: só ids/motivo — nunca o resumo da conversa (regra dura 8).
   opts.log.info('handoff humano aplicado (force_human + silêncio + crons cancelados + inbox)', {
     reason: opts.reason,
@@ -241,12 +239,18 @@ export async function applyRequestHumanHandoff(
     log: opts.log,
   });
 
+  // ACH-03: a expectativa vai JUNTO com a confirmação. Antes, a mensagem afirmava
+  // que "um atendente vai assumir" sem que ninguém tivesse olhado se havia
+  // alguém — e o agente repassava essa promessa ao cliente. Agora a resposta
+  // carrega o estado real da equipe, e o modelo não precisa lembrar de perguntar.
+  const { frase } = await expectativaDeAtendimento(db, ids.tenantId, new Date());
+
   return {
     ok: true,
     status: 'handoff_solicitado',
     message:
-      'Handoff humano acionado: um atendente vai assumir a conversa. Encerre o turno AGORA, ' +
-      'sem enviar mais mensagens ao lead.',
+      `Handoff humano acionado; a conversa saiu do atendimento automático. ${frase} ` +
+      'Encerre o turno AGORA, sem enviar mais mensagens ao lead além do aviso.',
   };
 }
 
@@ -260,6 +264,12 @@ export function buildHandoffSummary(
     objections: string[];
     next_action: string | null;
     rolling_summary: string;
+    /**
+     * A declaração do último turno (spec 16 §5). Opcional na assinatura porque
+     * chamador antigo (e checkpoint gravado antes da coluna existir) não a tem —
+     * ausência degrada para o resumo de hoje, nunca quebra o handoff.
+     */
+    declaracao?: DeclaracaoDoTurno | null;
   } | null,
 ): string {
   if (previous === null) {
@@ -267,6 +277,12 @@ export function buildHandoffSummary(
   }
   const parts: string[] = [];
   if (previous.rolling_summary.trim() !== '') parts.push(previous.rolling_summary.trim());
+  // A declaração vem ANTES dos campos antigos de propósito: quem assume uma
+  // conversa no meio precisa primeiro do que a pessoa quer e do que foi
+  // prometido a ela — é o que decide a próxima frase que ele vai digitar.
+  // Compromissos e objeções acumulados são contexto, não ação imediata.
+  const declarado = renderDeclaracaoParaHumano(previous.declaracao ?? null);
+  if (declarado !== '') parts.push(declarado);
   if (previous.commitments.length > 0) parts.push(`Compromissos: ${previous.commitments.join('; ')}`);
   if (previous.objections.length > 0) parts.push(`Objeções: ${previous.objections.join('; ')}`);
   if (previous.next_action) parts.push(`Próxima ação: ${previous.next_action}`);

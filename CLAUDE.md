@@ -5,7 +5,7 @@
 **Este arquivo é a doutrina — a autoridade final sobre convenção e anti-pattern.** Complementos, na ordem em que ajudam:
 
 - [`AGENTS.md`](AGENTS.md) — mesmo contrato em forma portável (para Codex/Cursor/Copilot e afins). É derivado deste arquivo, não o substitui. **Ao mudar doutrina aqui, verifique se `AGENTS.md` desatualizou.**
-- [`docs/index.md`](docs/index.md) — índice dos 123 docs, com regra de precedência quando dois docs discordam. Use antes de sair varrendo `docs/`.
+- [`docs/index.md`](docs/index.md) — índice dos 149 docs, com regra de precedência quando dois docs discordam. Use antes de sair varrendo `docs/`.
 - [`docs/current-state.md`](docs/current-state.md) — o que está pronto, incompleto e quebrado. **Leia antes de estimar ou prometer qualquer coisa.**
 - [`docs/harness-audit.md`](docs/harness-audit.md) — onde a verificação tem buraco. Importante: `pnpm gov:verify` **não** cobre `test:db` nem `test:e2e` — verde ali não é prova para mudança de schema ou de UI.
 - [`docs/threat-model.md`](docs/threat-model.md) — superfície de ataque real do self-host.
@@ -64,13 +64,32 @@ DeskcommCRM é um sistema operacional de vendas open source com agentes de IA na
 - Sempre `getUser()` (valida JWT no backend). NUNCA `getSession()` (confia no cookie local)
 - 4 roles dentro do tenant: `viewer` (1) < `agent` (2) < `manager` (3) < `admin` (4)
 - Super-admin de plataforma é uma role transversal — `is_platform_admin` (decisão final na Spec 01)
-- MFA TOTP **forçado** pra `admin` e super-admin
+- MFA TOTP é **opcional e ligado por quem administra** — não é mais forçado por papel. Quem exige são duas políticas independentes que SOMAM: `platform_admins.mfa_required` (para o super-admin) e `organizations.settings.security.mfa_required` (para o `admin` do tenant). O padrão de ambas é **não exigir**, e o `bootstrap-owner.ts` grava `false` explícito. Regra pura em `lib/auth/politica-mfa.ts`
+  - **Por que mudou:** o gate era `isPlatformAdmin || role === "admin"`, sem opção, e o `install.sh` cria o dono como platform admin — então TODA instalação self-host recebia um bloqueador de tela cheia logo depois do onboarding, um passo que o wizard nunca anunciou. Decisão do dono do produto; segurança que expulsa o usuário na primeira tela não protege ninguém
+  - **⚠️ CADASTRAR e PROVAR são perguntas diferentes.** A política decide o cadastro. Já `mfaEmDivida()` — o 403 `mfa_required` das rotas — NÃO consulta a política: quem TEM fator prova na sessão, sempre. Ligá-lo à política faria quem ativa a verificação por vontade própria ter o fator ignorado
+  - Ligar/desligar vive em **Configurações › Segurança**; desligar o próprio fator exige sessão `aal2` (senão uma sessão roubada desliga a proteção com um clique)
 - Permissão por pipeline (`user_pipeline_access`) **NÃO** entra no MVP
 
 ### Audit log
 - Toda mutação POST/PATCH/DELETE bem-sucedida → 1 entrada em `api_audit_log` (fire-and-forget, p99 ≤500ms)
-- Audit é append-only. Sem RLS de UPDATE/DELETE. Edição apenas via DBA manual
-- Retenção 5 anos. Hot 90 dias, cold (S3) o resto
+- **Rodada de cron que não fez nada NÃO é mutação e não audita** — e a que fez, audita. `routing-worker` (1×/min) e `attendant-heartbeat` (1×/5min) auditavam incondicionalmente: ~51.840 linhas/mês numa instalação que não atende ninguém, e numa VPS real **95% do audit log** era batida de cron vazia (`docs/testing/user-journey-map.md`, achado 17). A guarda certa é *auditar quando houve efeito*, nunca *parar de auditar* — as duas direções são medidas por `tests/unit/cron-audita-so-quando-ha-efeito.test.ts`, que varre o AST de **toda** rota de `app/api/v1/cron/`
+- Audit é append-only, e isso é do SCHEMA e não da prosa: nenhum papel tem GRANT de UPDATE/DELETE em `api_audit_log` — **nem `service_role`**. Para conferir na fonte em vez de acreditar nesta linha:
+
+  ```bash
+  psql "$SUPABASE_DB_URL" -c "select grantee, privilege_type from information_schema.role_table_grants
+    where table_name='api_audit_log' and privilege_type in ('DELETE','UPDATE','TRUNCATE');"
+  ```
+
+  **`TRUNCATE` entra na consulta de propósito, e o resultado não é vazio.** Ele
+  está concedido a `anon`, `authenticated` e `service_role` — resíduo de o dump
+  enumerar os privilégios desta tabela (as demais recebem `GRANT ALL`, e quem as
+  protege é a RLS). Uma sonda que pergunte só por `DELETE`/`UPDATE` devolve zero
+  linhas e deixa quem leu concluindo que a tabela não pode ser esvaziada, quando
+  o privilégio que a esvazia INTEIRA está lá. Não é alcançável pela REST (o
+  PostgREST não emite `TRUNCATE`), então não é buraco de superfície — mas a
+  frase "append-only é do schema" só é inteira com esta ressalva escrita.
+- **Retenção default de 5 anos, configurável, e agora EXECUTADA.** O expurgo é `public.fn_expurgar_auditoria_vencida` (`security definer`, **piso de 90 dias dentro do corpo**, revogada de anon/authenticated), chamada em lotes pelo cron `app/api/v1/cron/data-retention` (diário). O knob é `AUDIT_LOG_RETENTION_DAYS`. **Não há camada cold/S3** — o "hot 90 dias, cold (S3) o resto" que este arquivo afirmava por meses nunca existiu em código (auditoria de 2026-08-14: zero ocorrência de arquivamento), e um self-host não tem para onde arquivar: o Storage do cliente é a MESMA cota de 1 GB, já dividida com `whatsapp-media`. Para ver o que está em vigor: `grep -n "RETENCAO_AUDITORIA_DIAS" lib/retencao/politica.ts`
+- Por que uma `security definer` de expurgo não é porta de adulteração (o argumento inteiro está no cabeçalho da migration 0167): ela **não tem seletor de linha** — nenhum parâmetro de org, ator, ação ou id, e o único predicado é `created_at < now() - N dias`; o piso mora **no corpo**, não em quem chama; não é alcançável pela REST; não amplia o raio de quem já tem a service key; e **registra a própria erosão** (`retention.sweep_run`, com a contagem, numa linha nova demais para a chamada seguinte alcançar)
 - Falha de write em audit gera alerta Sentry, não bloqueia mutação principal
 
 ### LGPD
@@ -85,12 +104,29 @@ DeskcommCRM é um sistema operacional de vendas open source com agentes de IA na
 - Engine NOWEB default; WEBJS apenas se precisar stickers animados / botões
 - Auth: env do WAHA recebe **hash SHA512 hex** da api key; cliente envia plaintext em `X-Api-Key`
 - Webhooks: HMAC SHA512 com `crypto.timingSafeEqual`
-- Anti-banimento: throttle 1 msg/1.2s + jitter ≤800ms. Campanha 1 msg/5s. Warm-up 7-14d. Spinning de copy. Janela 7h-22h, evitar domingo
-- STOP detection: regex `/STOP|PARAR|SAIR|UNSUBSCRIBE/i` no inbound → `is_blocked=true` automaticamente
+- Anti-banimento: throttle 1 msg/1.2s + jitter ≤800ms. Campanha 1 msg/5s. Warm-up 7-14d. Spinning de copy. Janela 7h-22h (domingo LIBERADO por default desde 2026-08-20; a janela é knob por canal)
+- STOP detection: a regra mora em `lib/opt-out/deteccao.ts` e é a MESMA nos dois lados —
+  a ingestão (que grava `is_blocked=true`) e o runtime do agente. **Não é mais a palavra
+  solta:** só bloqueia palavra ISOLADA (mensagem inteira = a palavra) ou verbo de cessação
+  com OBJETO DE COMUNICAÇÃO ("parar de me mandar", "sair da lista"). Enquanto eram duas
+  regras, a ingestão bloqueava paciente que perguntou "tem como parar a dor?" — medido em
+  clínica, 12 falsos positivos num corpus de 32 frases de nicho.
+  Para ver o vocabulário em vigor sem confiar nesta linha:
+  `grep -n 'PALAVRAS_DE_OPT_OUT' -A20 lib/opt-out/deteccao.ts`, e as frases de controle em
+  `tests/unit/opt-out-deteccao.test.ts`. **Espanhol ainda NÃO é coberto** (`baja`, `salir`,
+  `no quiero recibir`) — ver PR #275.
 - Mídia: subir pro Supabase Storage primeiro, passar URL ao WAHA (não inline base64)
 - Multi-device: assinar `message.any` (não só `message`); tratar `fromMe=true` sem duplicar
 - Grupos: SKIP CRM binding se `chatId.endsWith('@g.us')`. Sender é `p.author`, não `p.from`
-- Cron `recover-stuck-messages`: marca `status='sending'` há >5min como `failed`
+- Cron `recover-stuck-messages` (`app/api/v1/cron/recover-stuck-messages/route.ts`, agendado no `scheduler` do `docker-compose.prod.yml`): marca `status='sending'` há >5min como `failed` **e abre aviso na Central** (`agent_inbox_items` kind `message_send_stuck`). Não toca em `queued`: esse estado tem dono (o agent-engine reagenda por `SEND_QUEUED_RETRY_MS`), e falhá-lo perderia mensagem que ia sair. Não reenvia — envio em dobro é pior que não-envio
+
+### Marca própria (white-label)
+- **Uma imagem Docker serve todas as marcas.** Nada de `NEXT_PUBLIC_*` para marca, nada de `public/favicon.ico`, nada de imagem por revendedor — a imagem é pré-buildada e o `update.sh` regrava `APP_IMAGE` incondicionalmente
+- **O banco está ACIMA do `.env`.** `platform_branding` (instalação) e `organizations.settings.branding` (organização) são a fonte; `APP_NAME`/`APP_LOGO_URL`/`APP_ACCENT_HEX` são **semente e piso de rollback** (o `agent.sh` reverte a imagem, nunca o banco)
+- **Resolvedor NUNCA lança.** `lib/branding/instalacao.ts` e `lib/branding/saida.ts` degradam para o padrão do produto e seguem: `branding()` roda em `app/layout.tsx`, e um throw ali é 500 em todas as telas
+- **Saída sem DOM usa `marcaDaSaida()`** (`lib/branding/saida.ts`) — e-mail, remetente, ícone, `issuer` do MFA. Um hex e uma frente legível, tema **claro** sempre. Nunca passe `MarcaResolvida` a template de e-mail
+- **O PDF de LGPD NUNCA leva marca.** Ele nomeia o **controlador** (`organizations.legal_name`) e o DPO resolvido. Nomear ali o revendedor — que é operador — inverteria papéis num documento que responde a direito legal. Vigiado em `tests/unit/mapas-de-arquitetura.test.ts`
+- Vazamento de marca no código é vigiado por `tests/unit/branding.test.ts` (varre `app|components|lib|workers|hooks`), com allowlist que **só encolhe**. Contexto de venda em [`docs/white-label.md`](docs/white-label.md); mapa em `docs/architecture/marca-propria.architecture.json`
 
 ### Doutrina DIRC (antes de adicionar campo)
 - **D**uplicar — vive aqui mesmo?
@@ -151,6 +187,71 @@ DeskcommCRM é um sistema operacional de vendas open source com agentes de IA na
 | `lib/supabase/{browser,server,admin}.ts` | Clients canônicos |
 | `app/api/v1/health/route.ts` | Health check (Supabase + Redis + WAHA) |
 | `supabase/migrations/` | Schema versionado |
+| `docs/runbooks/deploy.md` | **Deploy em produção — leia ANTES de mexer na VPS** |
+
+---
+
+## Deploy em produção (NÃO NEGOCIÁVEL)
+
+**Numa VPS que já tem proxy reverso próprio (Hostinger, Coolify, Dokploy…), todo
+`up -d` leva os DOIS arquivos de compose:**
+
+```bash
+docker compose -f docker-compose.prod.yml -f docker-compose.traefik.yml --env-file .env up -d app
+```
+
+Omitir `-f docker-compose.traefik.yml` recria o contêiner sem as labels de
+roteamento; o Traefik da hospedagem deixa de enxergá-lo e **o domínio inteiro
+responde `404 page not found`** — com o contêiner `healthy`, porque o
+healthcheck é um probe TCP interno e não sabe nada de roteamento.
+
+Depois de qualquer deploy, confirme que o domínio responde **307** (redireciona
+pro login) e não 404. Verificações e o caso de build local em
+`docs/runbooks/deploy.md`.
+
+O caminho normal **não constrói nada na VPS**: commit → push → PR → merge na
+`main` → o CI publica no GHCR → a VPS puxa. Imagem construída na VPS é exceção
+de emergência e é dívida: existe só naquele disco e qualquer `up -d` sem
+`APP_PULL_POLICY=never` a substitui em silêncio.
+
+Essa frase já foi meia-verdade: valia para o `app` e era falsa para o produto,
+porque o serviço `worker` não tinha `image:` — era construído na VPS de todo
+cliente e nunca reconstruído por nenhum `update.sh`. Hoje os três serviços
+nossos (`app`, `worker`, `scheduler`) são imagens publicadas, e um teste
+reprova o retorno do padrão. Ver a doutrina abaixo.
+
+---
+
+## Packaging e distribuição — DOUTRINA (NÃO NEGOCIÁVEL)
+
+Lei completa em [`docs/doctrine/packaging.md`](docs/doctrine/packaging.md);
+decisões estruturais e o que foi recusado em
+[`docs/adr/0001-packaging-e-distribuicao.md`](docs/adr/0001-packaging-e-distribuicao.md).
+O não-negociável, em quatro linhas:
+
+1. **Nenhum serviço de `docker-compose.prod.yml` constrói na máquina do
+   cliente.** Todo serviço declara `image:` de uma imagem publicada; `build:`
+   só existe **ao lado**, como escape. Serviço `build:`-only é invisível para
+   `docker compose pull` e imune a `up -d` sem `--build` — ele não é só caro de
+   instalar, ele **nunca é atualizado**.
+2. **Publicação é ato do CI.** Nunca da sua máquina: build ARM local não roda
+   na VPS amd64 do cliente, e a falha só aparece no `up -d` dele. O job
+   `imagens-ok` reprova quando qualquer uma das três imagens não constrói, e
+   **é status check obrigatório desde 2026-08-13** — a branch protection tem
+   `verify, build-and-size, invariants, e2e, imagens-ok`. (Este parágrafo dizia
+   "ainda não é obrigatório" até 2026-08-14; a ativação era o passo final do
+   merge da doutrina e aconteceu.) Confira na fonte antes de confiar nesta linha.
+3. **Instalação de cliente aponta para número de versão, nunca para tag móvel.**
+   `latest` aqui significa **topo da `main`**, não última release — quem quer a
+   última release usa `stable`. `pull_policy` acompanha a mutabilidade da tag:
+   imutável → `missing`, móvel → `always`.
+4. **Dependência upstream é referenciada com tag fixa, nunca republicada.**
+   Vale para WAHA (licenciado — republicar é passivo jurídico), Redis, Caddy e
+   `serverless-redis-http`.
+
+Bump de versão **não pode** exigir que o operador da VPS edite `.env`, compose
+ou qualquer arquivo à mão. Se exigir, não entra: vira issue com plano de
+migração e vai para uma major.
 
 ---
 
@@ -185,10 +286,35 @@ Checks **obrigatórios** na branch protection da `main` (verificado na configura
 - **`verify`** (`ci.yml`) — typecheck + lint + test:unit.
 - **`invariants`** (`ci.yml`) — `pnpm test:db`: sobe `pgvector/pgvector:pg17`, aplica `supabase/baseline.sql` em modo install (`ON_ERROR_STOP=1`) e update (idempotência), e roda os testes de invariante, incluindo o de isolamento RLS entre 2 organizações.
 - **`build-and-size`** (`perf.yml`) — `pnpm build` em Node 22.
+- **`e2e`** (`e2e.yml`) — sobe Supabase local, aplica o `baseline.sql` e roda **todas as specs Playwright menos uma**. O número saiu daqui de propósito: ele apodreceu **cinco** vezes (a quinta em 2026-08-24, quando `inbox-quem-manda.spec.ts` entrou), e a condição que o PR #242 pôs para parar de recontar já tinha vencido na quarta. Quem precisa do número roda o comando abaixo — comando não envelhece. A **única** de fora é `vps-fresh-onboarding` (precisa de WAHA + Redis + Resend + Nuvemshop) — e ela é a **P0** da doutrina de QA Visual, ou seja, `e2e` verde **não** prova a jornada de instalação fresca, que é o produto que se vende.
 
-Check **não-obrigatório** (roda, mas não segura merge):
+  **Não confie em `grep` no arquivo inteiro.** `grep -oE '[a-z0-9-]+\.spec\.ts' .github/workflows/e2e.yml | sort -u | wc -l` conta quem é CITADO, não quem é INVOCADO: a `FORA_DO_CI` é uma variável YAML como as outras e entra na conta. (Até 2026-08-14 este parágrafo culpava "menções em comentários", e isso é falso — medido, o conjunto de specs citadas fora de variável é **vazio**.) O que roda são as `SPECS_PARTE_*`:
 
-- **`e2e`** (`e2e.yml`) — sobe Supabase local, aplica o `baseline.sql` e roda **3 das 19 specs** Playwright (`smoke`, `auth`, `error-pages`). As outras 16 dependem de fixture semeada ou serviço externo e seguem sem gate (issue #63). Vira obrigatório quando acumular execuções estáveis.
+  ```bash
+  ls tests/e2e/*.spec.ts | wc -l                    # quantas existem
+  python3 - <<'PY'                                  # quantas o CI invoca
+  import re
+  y = open(".github/workflows/e2e.yml", encoding="utf-8").read()
+  print(len({s for _, c in re.findall(r'(SPECS_PARTE_\d+):\s*>-\n((?:[ ]{8,}.*\n)+)', y)
+               for s in re.findall(r'[a-z0-9-]+\.spec\.ts', c)}))
+  PY
+  ```
+
+  **Por que não há mais número aqui.** O conserto que este parágrafo pedia era pôr a prosa sob gate — `tests/unit/e2e-cobertura-completa.test.ts` cobrando também o texto daqui. Tirar o número é melhor e mais barato: não há o que policiar, e a diferença entre disco e CI segue vigiada onde importa, no próprio teste, que reprova toda spec nova que não esteja em `SPECS_PARTE_*` ou em `FORA_DO_CI` **com motivo escrito**. Prosa que nenhum gate lê é prosa que diverge; prosa que não afirma número não tem como divergir.
+- **`imagens-ok`** (`publish-image.yml`) — reprova quando qualquer uma das três imagens Docker não constrói. **É obrigatório desde 2026-08-13**; este arquivo dizia o contrário em outro parágrafo (ver a doutrina de packaging acima, já corrigida).
+
+Todos os **cinco** são **obrigatórios** — medido em 2026-08-14 na branch protection:
+
+```console
+$ gh api repos/melgarafael/DeskcommCRM/branches/main/protection --jq '.required_status_checks.contexts|join(", ")'
+verify, build-and-size, invariants, e2e, imagens-ok
+```
+
+Duas correções que este bloco já pagou: o `e2e` entrou para a lista depois de o arquivo ser escrito, e
+a versão anterior dizia que ele "ainda não é obrigatório"; depois o `imagens-ok` entrou e o arquivo
+seguiu dizendo "quatro". Uma triagem que leia qualquer uma dessas versões mede contra a régua errada —
+que é o modo de falha nº 1 do procedimento de triagem. **Reconfira na fonte antes de confiar em
+qualquer lista aqui**, com o comando acima.
 
 Ao mexer em schema, RLS, RBAC, atribuição, escopo, roteamento, follow-up, webhooks ou automações: rode `pnpm test:db` **localmente** antes de abrir PR. É o único caminho que exercita o `baseline.sql` que o self-hoster realmente aplica.
 
@@ -243,6 +369,14 @@ Processo padrão (siga sempre):
 6. **Reflita no `supabase/baseline.sql` (OBRIGATÓRIO — é o que o kit self-host aplica).** O baseline é um dump `--schema-only` + um **apêndice idempotente** no fim do arquivo (blocos rotulados `-- ---- <coisa> (migration NNNN) ----`). O kit HostGator aplica **só o baseline.sql**, tanto no `install.sh` (banco novo, `ON_ERROR_STOP=1`) quanto no `update.sh` (re-aplica em banco existente, **sem** `ON_ERROR_STOP`). Então toda mudança de schema pós-snapshot DEVE ser acrescentada ao apêndice, **idempotente e auto-curativa**: `add column if not exists`, `create ... if not exists`, `create or replace function`, e — se a mudança adiciona constraint — **deduplicar/corrigir os dados ANTES** de criar a constraint (senão o `update.sh` de um clone bugado quebra). Sem isto, clones não recebem a mudança (ou quebram ao atualizar). Migração adicionada só em `migrations/` mas não no baseline **não chega aos self-hosters**.
 7. **Aplique e prove**: aplique via `mcp__plugin_supabase_supabase__apply_migration` (ou `supabase db push`), capture o estado ANTES/DEPOIS e prove invariantes (ex.: contagem de linhas que não pode mudar). Se mexeu em contrato, regenere `lib/database.types.ts`. Para mudanças de schema no kit, valide o baseline num Postgres descartável (`pgvector/pgvector:pg17` + extensões) aplicando `install` (fresh, `ON_ERROR_STOP=1`) e `update` (re-aplicar, sem a flag) — ambos têm que passar.
 8. **Backfill de dados quebrados existentes**: constraint nova falha se os dados atuais a violam — a migration (e o apêndice do baseline) deve deduplicar/corrigir ANTES de criar a constraint.
+9. **Função nova em `public` nasce EXPOSTA — revogue as DUAS origens.** Toda `create function` no schema `public` termina com:
+
+   ```sql
+   revoke execute on function public.fn_x(...) from public, anon;
+   grant  execute on function public.fn_x(...) to <só quem precisa>;
+   ```
+
+   São duas origens distintas de `EXECUTE`, e tratar só uma deixa a função exposta com o gate verde: **(A)** o grant direto a `anon` do `ALTER DEFAULT PRIVILEGES ... GRANT ALL ON FUNCTIONS TO anon` do baseline, que vale para toda função criada depois dele — isto é, para todo apêndice novo — e que `revoke from public` **não** remove; **(B)** o grant a `PUBLIC` que o Postgres dá a qualquer função ao criá-la, que `revoke from anon` **não** remove. Sem os dois, o PostgREST expõe a função como RPC alcançável pela anon key, que vai para o browser. Vigiado por `tests/invariants/hardening-definer-varredura.test.ts`, que varre todas as `security definer` de `public` (issue #128 — a versão anterior checava uma lista fixa de 6, e 8 de 25 estavam expostas).
 
 **Resumo do fluxo de uma mudança de schema:** arquivo em `migrations/` (fonte da verdade p/ Supabase CLI) **+** apêndice idempotente no `baseline.sql` (p/ o kit self-host) **+** linha no MANIFEST. Os dois artefatos de schema andam juntos. Nunca edite migrations já aplicadas — corrija com uma "forward-fix" nova (e mais um apêndice no baseline).
 
@@ -279,6 +413,15 @@ Antes de declarar uma task pronta:
 10. Doc atualizada se mudou contrato (PRD/spec)
 11. **Mudança de schema saiu como migration versionada + linha no MANIFEST** (ver Doutrina de Migrations) — clones conseguem atualizar
 12. **Se tocou UI/fluxo de usuário: provado pela tela como um leigo faria**, em ambiente fresco estilo VPS, com evidência visual (ver Doutrina de QA Visual com Recursos Reais) — curl não conta
-13. **Living System Checklist respondido** (ver `docs/doctrine/sistema-vivo.md`) — a feature não é ilha: tem entrada + saída, emite atividade/log, aparece na tela, tem mecanismo anti-morte, e o mapa vivo (`docs/architecture/`) reflete peça nova com ≥2 arestas
+13. **Living System Checklist respondido** (lei em `docs/doctrine/sistema-vivo.md`; racional no manual `docs/doctrine/sistema-vivo/`) — a feature não é ilha: tem entrada + saída, emite atividade/log, aparece na tela, tem porta na navegação, tem mecanismo anti-morte, **declara seu laço de retorno** (invariante 7 — o que muda no sistema quando ela erra), e o mapa vivo (`docs/architecture/`) reflete peça nova com ≥2 arestas. Resposta que não **nomeia o artefato concreto** (consumidor real, tela real, log real) não conta
+14. **Tela nova tem porta** — declarada em `lib/navigation/registry.ts` com seu grupo, ou na allowlist de `tests/unit/navegacao-completude.test.ts` **com justificativa escrita**. Ter tela e ser alcançável são coisas diferentes: o CI reprova tela que existe mas em que só se chega digitando a URL
+15. **Se tocou Dockerfile, compose ou setup kit: a mudança chega a quem já instalou** (lei em `docs/doctrine/packaging.md`) — nenhum serviço de produção ficou `build:`-only; variável nova tem default que não quebra `.env` antigo; a atualização não pede edição manual de arquivo; e, se mudou o que a imagem contém, o `update.sh` alcança essa peça. Rode `pnpm test:shell` — é o único gate que exercita o kit
+16. **Se o PR muda comportamento, procure a afirmação de estado sobre esse comportamento.** Só
+    sobre o que você mudou, e só nos documentos de autoridade — não saia caçando pelo repo. A
+    documentação afirma como o mundo *está*, e uma auditoria de 2026-08-14 achou **227
+    afirmações desatualizadas em 393 medidas**
+    ([`docs/audits/2026-08-14-afirmacoes-de-estado.md`](docs/audits/2026-08-14-afirmacoes-de-estado.md)).
+    Onde a afirmação puder virar **comando**, troque em vez de corrigir: um número corrigido
+    envelhece de novo; um `rode isto para saber` não envelhece nunca
 
 Um staff engineer aprovaria? Se não, itera.

@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { PlugsConnected, Plus } from "@/lib/ui/icons";
+import { SeloDeAutoria } from "@/components/operacao/SeloDeAutoria";
 import { useWebhookSources, type WebhookSourceRow } from "@/hooks/webhooks/useWebhookSources";
 import { CreateSourceDialog } from "./CreateSourceDialog";
 import { SourceDetail } from "./SourceDetail";
@@ -66,8 +67,8 @@ export function SourcesTab() {
 
   return (
     <div className="space-y-4 pt-4">
-      <div className="flex justify-end">
-        <Button onClick={() => setCreateOpen(true)}>
+      <div className="flex sm:justify-end">
+        <Button onClick={() => setCreateOpen(true)} className="w-full sm:w-auto">
           <Plus /> Nova fonte
         </Button>
       </div>
@@ -88,6 +89,9 @@ export function SourcesTab() {
               <p className="text-xs text-muted-foreground">
                 {lastReceivedLabel(s.last_received_at)}
               </p>
+              {/* Desligada, ela para de receber contatos e ninguém do outro lado
+                  é avisado — então quem a desligou entra na leitura do card. */}
+              <SeloDeAutoria kind={s.last_change_actor_kind} em={s.last_change_at} />
             </CardHeader>
           </Card>
         ))}

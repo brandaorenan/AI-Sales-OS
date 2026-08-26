@@ -1,11 +1,14 @@
 "use client";
 import { format, formatDistanceToNowStrict } from "date-fns";
 import { ptBR } from "date-fns/locale";
-import { Robot } from "@/lib/ui/icons";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Phone, Robot } from "@/lib/ui/icons";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
+import { OwnerBadge } from "@/components/kanban/OwnerBadge";
+import { comandoDaConversa } from "@/lib/inbox/comando-da-conversa";
 import { cn } from "@/lib/utils";
 import type { ConversationWithContact } from "@/hooks/inbox/useConversationsRealtime";
+import { rotuloDoContato } from "@/lib/contacts/rotulo-do-contato";
 
 interface Props {
   conversation: ConversationWithContact;
@@ -13,6 +16,31 @@ interface Props {
   onSelect: (id: string) => void;
   /** Posição 1-based na fila (G5-03). Presente só na visão Fila. */
   queuePosition?: number;
+  /**
+   * Mostrar POR ONDE a conversa entrou.
+   *
+   * Só com mais de um número conectado. Com um só, o rótulo seria a mesma
+   * palavra em toda linha da lista — ruído que ensina o olho a ignorar a área
+   * onde vivem os avisos que importam (bloqueado, tags).
+   */
+  mostrarCanal?: boolean;
+  /**
+   * Mostrar QUEM está no comando de cada conversa.
+   *
+   * Mesma regra do canal, e pelo mesmo motivo: só quando o rótulo DISCRIMINA. Nas
+   * abas "Fila" (todas sem dono), "Minhas" (todas do mesmo dono) e "IA" o badge
+   * seria a mesma palavra em toda linha — ruído que ensina o olho a ignorar a
+   * área onde vivem os avisos que importam. Quem decide é a lista, que é quem
+   * sabe quantos donos distintos ela tem.
+   */
+  mostrarAtendente?: boolean;
+  /**
+   * A org tem atendimento automático de pé? Vem por PROP e não por hook: um hook
+   * por linha faria 50 assinaturas de query na mesma lista para responder a MESMA
+   * pergunta org-wide. `undefined` = "não sei", e a função trata isso como "não
+   * afirme nada".
+   */
+  automaticoDaOrg?: boolean;
 }
 
 const STATUS_DOT: Record<string, string> = {
@@ -57,13 +85,12 @@ export function ConversationListItem({
   isSelected,
   onSelect,
   queuePosition,
+  mostrarCanal,
+  mostrarAtendente,
+  automaticoDaOrg,
 }: Props) {
   const c = conversation.contacts ?? null;
-  const displayName =
-    c?.display_name?.trim() ||
-    c?.name?.trim() ||
-    c?.phone_number ||
-    "Sem nome";
+  const displayName = rotuloDoContato(c);
   const phoneFallback = c?.phone_number ?? "??";
   const tags = c?.tags ?? [];
   const visibleTags = tags.slice(0, 2);
@@ -73,7 +100,31 @@ export function ConversationListItem({
   const time = relativeTime(conversation.last_message_at);
   const unread = conversation.unread_count_for_assignee ?? 0;
   const dot = STATUS_DOT[conversation.status] ?? STATUS_DOT.open;
-  const isAi = conversation.status === "ai_handling";
+
+  /**
+   * Quem manda, pela MESMA regra do cabeçalho.
+   *
+   * `status === 'ai_handling'` era um proxy ruim e foi medido: o único escritor
+   * desse status em produção é o botão "Devolver ao automático", então o ícone de
+   * robô aparecia só em conversa que já tinha sido escalada E devolvida — nunca
+   * na que o automático atendeu do começo ao fim, que é a maioria.
+   */
+  const { comando } = comandoDaConversa({
+    status: conversation.status,
+    assigned_to_user_id: conversation.assigned_to_user_id,
+    assigned_to_user_name: conversation.assigned_to_user_name ?? null,
+    assignee_kind: conversation.assignee_kind ?? null,
+    bot_silenced_until: conversation.bot_silenced_until ?? null,
+    force_human: c?.force_human ?? null,
+    automaticoDaOrg,
+  });
+  const isAi = comando.quem === "automatico";
+
+  // O número DA EMPRESA por onde esta conversa chegou — não o do cliente. Com
+  // dois canais é o que decide o tom da resposta e qual número a pessoa vê
+  // respondendo. Cai no nome do canal quando não há número (canal recém-criado).
+  const canal = conversation.channel_sessions ?? null;
+  const rotuloCanal = canal?.phone_number ?? canal?.display_name ?? null;
 
   return (
     <button
@@ -87,6 +138,17 @@ export function ConversationListItem({
     >
       <div className="relative shrink-0">
         <Avatar className="h-10 w-10">
+          {/* Só monta a <img> quando existe arquivo: sem isso o browser pediria
+              a rota para TODO contato da lista e levaria 404 em cada um sem
+              foto — que é a maioria. O AvatarFallback do Radix já cobre o caso
+              de a imagem não carregar, então as iniciais nunca somem. */}
+          {c?.avatar_storage_path && !c?.is_anonymized ? (
+            <AvatarImage
+              src={`/api/v1/contacts/${c.id}/avatar`}
+              alt=""
+              className="object-cover"
+            />
+          ) : null}
           <AvatarFallback className="text-xs">
             {initials(displayName, phoneFallback)}
           </AvatarFallback>
@@ -141,6 +203,19 @@ export function ConversationListItem({
           ))}
           {overflow > 0 && (
             <span className="text-[10px] text-muted-foreground">+{overflow}</span>
+          )}
+          {mostrarAtendente && comando.quem === "humano" && (
+            <OwnerBadge ownerKind="user" ownerName={comando.nome ?? "Atendente"} compacto />
+          )}
+          {mostrarCanal && rotuloCanal && (
+            <Badge
+              variant="outline"
+              className="h-4 gap-1 px-1.5 text-[10px] font-normal text-muted-foreground"
+              title={`Entrou por ${rotuloCanal}`}
+            >
+              <Phone size={9} weight="regular" aria-hidden />
+              {rotuloCanal}
+            </Badge>
           )}
           {c?.is_blocked && (
             <Badge variant="destructive" className="h-4 px-1.5 text-[10px]">

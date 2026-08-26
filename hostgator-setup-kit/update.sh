@@ -9,7 +9,11 @@
 #                  à que já está aqui (é o jeito explícito de voltar no tempo)
 #   --skip-backup  pula o backup automático (não recomendado)
 #   --to <tag>     instala essa tag em vez da mais recente publicada
-source "$(dirname "$0")/_common.sh"
+# Absoluto e resolvido ANTES do `enter_project`, que faz `cd`: depois dele um
+# `dirname "$0"` relativo apontaria para o lugar errado, e o único sintoma seria
+# um script do kit "não encontrado" no meio da atualização.
+KIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+source "$KIT_DIR/_common.sh"
 enter_project
 
 FORCE=""; SKIP_BACKUP=""; TARGET_TAG=""
@@ -21,6 +25,12 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
+
+# ── 0-. Esta cópia do repo é a dona dos contêineres? ─────────────────────────
+# Antes do cron e antes do git: uma segunda cópia que atualiza por cima recria o
+# parque com o .env DELA. Foi o que deixou o WhatsApp de uma VPS real três dias
+# em 401. Ver `recusar_projeto_de_outra_arvore` em _common.sh.
+recusar_projeto_de_outra_arvore || die "Atualização interrompida para não quebrar a instalação que está no ar."
 
 # ── 0. Liga o agente da tela ANTES de qualquer decisão de versão ─────────────
 # Instalar o cron aqui, e não no fim, é o que faz o bootstrap ter fim: os
@@ -123,15 +133,19 @@ fi
 # gera erros do tipo "já existe" / "multiple primary keys" — isso é ESPERADO e
 # inofensivo (são objetos que já estavam lá). Filtramos esse ruído e só
 # mostramos problemas de verdade.
+# Re-aplicar o baseline é DDL, então vai por `url_do_schema` (_common.sh) e não
+# pela string do app: numa instalação em Supabase próprio, com a role menor no
+# `.env` como recomendamos, este passo passava a falhar em silêncio a cada
+# atualização — e é o update.sh que entrega migration nova ao clone (issue #192).
 step "Atualizando o banco de dados"
 if [ -f supabase/baseline.sql ]; then
   # Extensões que o schema exige (idempotente; iguais ao install.sh).
-  docker run --rm postgres:17-alpine psql "$SUPABASE_DB_URL" -c \
+  docker run --rm postgres:17-alpine psql "$(url_do_schema)" -c \
     "create extension if not exists vector with schema public; create extension if not exists citext with schema public; create extension if not exists pg_trgm with schema public;" \
     >/dev/null 2>&1 || true
 
   raw="$(docker run --rm -i -v "$PROJECT_DIR/supabase/baseline.sql:/b.sql:ro" \
-        postgres:17-alpine psql "$SUPABASE_DB_URL" -f /b.sql 2>&1 || true)"
+        postgres:17-alpine psql "$(url_do_schema)" -f /b.sql 2>&1 || true)"
 
   # Erros benignos ao re-aplicar sobre uma base existente:
   benign='already exists|multiple primary keys|multiple default values|is already a member|already a partition'
@@ -141,6 +155,11 @@ if [ -f supabase/baseline.sql ]; then
     c_ylw "⚠ Apareceram avisos no banco que NÃO são os esperados:"
     printf '%s\n' "$unexpected" | head -20
     c_ylw "  O app pode ainda funcionar. Se algo estiver errado, restaure o backup (restore.sh)."
+    case "$unexpected" in
+      *permission\ denied*|*must\ be\ owner*|*permissão\ negada*)
+        c_ylw "  Os erros são de PERMISSÃO: a conexão do .env não é o dono do banco. Num Supabase"
+        c_ylw "  próprio, declare SUPABASE_DB_ADMIN_URL no .env — é ela que roda o schema." ;;
+    esac
   else
     c_grn "✓ banco atualizado (e conversas reorganizadas, se havia bagunça)."
   fi
@@ -149,22 +168,76 @@ else
 fi
 [ -n "${DESKCOMM_AGENT_REPORT:-}" ] && eval "${DESKCOMM_AGENT_REPORT_CMD}" banco
 
+# ── 4.5 E-mails de acesso, para quem já estava instalado ────────────────────
+# Só COM o token no ambiente, e por isso duas coisas:
+#
+#  - é assim que um clone ANTIGO recebe os e-mails com a marca dele. O
+#    `install.sh` dele nunca chamou este passo (ele não existia), e nenhuma
+#    atualização toca em config de auth por conta própria;
+#  - sem o token, o script imprimiria o passo manual — útil UMA vez, na
+#    instalação, e ruído em toda atualização a partir daí. Atualização que
+#    resmunga toda vez ensina a ignorar a saída dela.
+if [ -n "${SUPABASE_ACCESS_TOKEN:-}" ]; then
+  bash "$KIT_DIR/marca-emails.sh" --projeto "$PROJECT_DIR" || true
+fi
+
 # ── 5. App novo ──────────────────────────────────────────────────────────────
 step "Baixando a versão nova do app e reiniciando"
 # Imagem da TAG publicada (não "latest" solto): garante que o código (checkout
 # acima) e a imagem do container sejam sempre da mesma versão. Gravada no .env,
 # não só exportada: o compose lê a imagem de lá, e um `up -d` rodado à mão
 # depois voltaria pro ":latest" do install — desfazendo a atualização.
-export APP_IMAGE="ghcr.io/melgarafael/deskcommcrm:${TARGET_TAG#v}"
-set_env_var .env APP_IMAGE "$APP_IMAGE"
-# Devolve a política padrão: um rollback anterior deixou "missing" no .env
-# (porque a imagem de volta é um ID local, que não se puxa do registro), e
-# ninguém desfazia isso — o `up -d` manual do dono parava de puxar imagem para
-# sempre. Aqui o alvo é uma tag do registro de novo, então "always" volta a ser
-# o certo.
-set_env_var .env APP_PULL_POLICY always
-docker compose -f "$COMPOSE" pull
-docker compose -f "$COMPOSE" up -d
+#
+# As TRÊS imagens são gravadas juntas, na mesma versão. O worker e o scheduler
+# passaram a ter imagem publicada porque, antes, eram `build:`-only no compose:
+# `dc pull` os PULAVA ("Skipped - No image to be pulled") e o `dc up -d` abaixo
+# recriava o contêiner sobre a imagem velha, sem `--build`. Resultado: o worker
+# — que é o runtime do agente de IA — ficava congelado no código do dia da
+# instalação e atravessava todas as atualizações. Esta é a linha que conserta
+# isso para o parque já instalado, sem que ninguém precise editar arquivo.
+#
+# `gravar_imagens` também resolve o pull_policy pela mutabilidade da tag: como
+# aqui o alvo é sempre uma tag de versão (imutável), sai `missing`. Isso além de
+# tudo desfaz o "missing" que um rollback anterior deixava para trás — antes ele
+# ficava no .env para sempre, e o `up -d` manual do dono nunca mais puxava nada.
+# Lido ANTES de `gravar_imagens` corrigir — senão a informação some. Este é o
+# estado que a execução ANTERIOR deixou, e o dono nunca soube: o `update.sh`
+# antigo grava só `APP_IMAGE`, e o worker fica seguindo um canal móvel.
+PIN_FALTANDO_ANTES="$(pin_incompleto .env)"
+
+VERSAO_ALVO="${TARGET_TAG#v}"
+export APP_IMAGE="${IMG_APP}:${VERSAO_ALVO}"
+export WORKER_IMAGE="${IMG_WORKER}:${VERSAO_ALVO}"
+export SCHEDULER_IMAGE="${IMG_SCHEDULER}:${VERSAO_ALVO}"
+gravar_imagens .env "$VERSAO_ALVO"
+
+# `dc pull` falha se alguma das três imagens ainda não existir no registro — o
+# que acontece numa instalação atualizando para a primeira versão publicada
+# depois desta mudança, ou se um run de publicação quebrou. Nesse caso o compose
+# ainda tem `build:` ao lado do `image:` do worker e do scheduler, então o
+# `up -d` os constrói localmente: pior que puxar, melhor que não atualizar.
+if ! dc pull; then
+  # A mensagem distingue os dois casos porque a consequência é oposta, e uma
+  # frase tranquilizadora sobre o caso errado é o pior desfecho possível: o
+  # `worker` e o `scheduler` têm `build:` ao lado do `image:` e o `up -d` os
+  # constrói; o `app` NÃO tem, então se for a imagem dele que falta, o `up -d`
+  # morre logo abaixo — e dizer "sigo assim mesmo" teria sido mentira.
+  if dc pull app >/dev/null 2>&1; then
+    c_ylw "⚠ Não consegui puxar todas as imagens da versão ${VERSAO_ALVO}."
+    c_ylw "  A do app veio; o que faltar é construído aqui (mais lento, mesmo resultado)."
+  else
+    c_ylw "⚠ Não consegui puxar a imagem do APP na versão ${VERSAO_ALVO}."
+    c_ylw "  Causas comuns: a versão ainda está publicando, ou o pacote está privado no GHCR."
+    c_ylw "  Vou tentar subir mesmo assim — se falhar, rode de novo em alguns minutos."
+  fi
+fi
+# A rede do proxy externo é declarada como EXTERNA no compose: se ela sumiu
+# (um `docker network prune`, ou o `down -v` que o próprio kit ensina como
+# caminho de recomeço), o `up -d` abaixo morre em "network X declared as
+# external, but could not be found" — e este script roda sozinho pelo agent.sh,
+# então ninguém está lendo a tela para decifrar isso. Mesma função do install.sh.
+garantir_rede_do_proxy
+dc up -d
 
 # O Caddyfile entra no container por bind mount de UM ARQUIVO, e bind mount de
 # arquivo fica preso ao inode. O `git pull` não edita o arquivo: escreve outro e
@@ -175,25 +248,36 @@ docker compose -f "$COMPOSE" up -d
 # Sem este force-recreate, TODA mudança de proxy enviada numa atualização
 # (inclusive correção de segurança na borda) some em silêncio: o update diz
 # "concluída" e a configuração antiga segue valendo.
-docker compose -f "$COMPOSE" up -d --force-recreate --no-deps caddy >/dev/null 2>&1 \
-  && c_grn "✓ proxy recarregado com a configuração desta versão" \
-  || c_ylw "⚠ não consegui recriar o proxy — rode: docker compose -f $COMPOSE up -d --force-recreate caddy"
+#
+# Com proxy externo não há Caddy para recriar — e não basta o profile inativo
+# do override: nomear o serviço explicitamente (`up -d ... caddy`) ATIVA o
+# profile dele no Compose e sobe o contêiner assim mesmo, indo bater de frente
+# com o Traefik nas portas 80/443. O resultado era um "⚠ não consegui recriar o
+# proxy" em TODA atualização de quem usa proxy externo: alarme falso, num
+# momento em que o dono precisa confiar no que está lendo.
+if [ "${REVERSE_PROXY:-caddy}" = "traefik" ]; then
+  c_grn "✓ proxy externo (Traefik): o Caddy não é usado aqui — nada a recarregar"
+else
+  dc up -d --force-recreate --no-deps caddy >/dev/null 2>&1 \
+    && c_grn "✓ proxy recarregado com a configuração desta versão" \
+    || c_ylw "⚠ não consegui recriar o proxy — rode: docker compose $(dc_files) up -d --force-recreate caddy"
+fi
 
 # ── 6. O app voltou no ar? ───────────────────────────────────────────────────
 step "Conferindo se o app voltou no ar"
 ok=""
-for _ in $(seq 1 20); do
-  out="$(docker compose -f "$COMPOSE" exec -T app node -e \
-    "fetch('http://127.0.0.1:3000/api/v1/health').then(r=>r.text()).then(t=>{console.log(t);process.exit(0)}).catch(()=>process.exit(1))" \
-    2>/dev/null || echo '')"
-  printf '%s' "$out" | grep -q '"status":"ok"' && { ok=1; break; }
-  sleep 3
-done
+wait_app_healthy 20 3 >/dev/null && ok=1
 if [ -n "$ok" ]; then
   c_grn "✓ Atualização concluída — app no ar e saudável."
+  # Dito no fim, e não no início, porque é aqui que o dono lê. Se a execução
+  # anterior deixou o pin pela metade, ele nunca soube — a tela dizia "concluída"
+  # e o worker seguia um canal móvel. Agora ele sabe que existiu e que acabou.
+  if [ -n "$PIN_FALTANDO_ANTES" ]; then
+    c_ylw "  (de quebra: a versão de $PIN_FALTANDO_ANTES estava solta e foi fixada agora)"
+  fi
 else
   c_ylw "⚠ Atualizei, mas o app não respondeu 'ok'. Veja os logs:"
-  c_ylw "  docker compose -f $COMPOSE logs --tail=50 app"
+  c_ylw "  docker compose $(dc_files) logs --tail=50 app"
   # Código de saída != 0: é o que o agent.sh usa pra saber que precisa voltar
   # pra imagem anterior (guardada por ele ANTES do pull). Sem isso, não existe
   # rede de proteção — o app novo, quebrado, ficaria no ar sem ninguém saber.

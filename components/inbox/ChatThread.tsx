@@ -20,6 +20,8 @@ interface Props {
   /** Spec 16 §9.4 — marca de corte do contato (null = sem divisor). */
   contextResetAt?: string | null;
   contextResetReason?: string | null;
+  /** Escolher uma mensagem para responder. Sobe até o composer. */
+  onResponder?: (m: Message) => void;
 }
 
 /** Onda 5.2: union de item do thread — mensagem real ou nota interna (nunca vai ao cliente). */
@@ -68,10 +70,13 @@ export function ChatThread({
   conversationId,
   contextResetAt = null,
   contextResetReason = null,
+  onResponder,
 }: Props) {
   const q = useMessagesRealtime(conversationId);
   const notes = useConversationNotes(conversationId);
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  const scrollerRef = useRef<HTMLDivElement | null>(null);
+  const paginasVistas = useRef(0);
   const activeOrg = useActiveOrg();
   const currentUser = useUser();
   const deleteNote = useDeleteNote(conversationId ?? "");
@@ -83,6 +88,16 @@ export function ChatThread({
     [q.data],
   );
 
+  /**
+   * As mensagens por id, para resolver a CITADA sem ir ao servidor.
+   *
+   * Uma consulta por bolha citada seria uma cascata de requisições numa
+   * conversa longa. Aqui o fio sai da lista que já está na tela — e quando a
+   * citada ficou fora da página carregada, ele simplesmente não aparece, que é
+   * melhor que segurar a conversa esperando por um texto de enfeite.
+   */
+  const porId = useMemo(() => new Map(messages.map((m) => [m.id, m])), [messages]);
+
   const items: ThreadItem[] = useMemo(
     () => mergeThreadItems(messages, notes),
     [messages, notes],
@@ -93,11 +108,42 @@ export function ChatThread({
     [items, contextResetAt],
   );
 
-  // Scroll to bottom on first load + new message/note arrival.
+  const paginas = q.data?.pages.length ?? 0;
+
+  // Conversa nova: a contagem de páginas recomeça, senão a primeira carga da
+  // próxima conversa seria confundida com um "carregar mais antigas".
   useEffect(() => {
-    if (!bottomRef.current) return;
-    bottomRef.current.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [items.length, conversationId]);
+    paginasVistas.current = 0;
+  }, [conversationId]);
+
+  // Rola ao fim na primeira carga e quando chega mensagem/nota nova — mas NÃO
+  // quando o crescimento veio do "Carregar mais antigas".
+  //
+  // A thread pagina para o PASSADO: cada `fetchNextPage` traz mensagens mais
+  // antigas, que entram ACIMA das que já estão na tela. Rolar ao fim aqui
+  // devolveria o usuário ao rodapé no instante em que ele pediu para subir —
+  // o clique parece não ter efeito, embora tenha carregado (medido: thread vai
+  // de msg#15..#64 para msg#1..#64 e a viewport volta a 7px do fim).
+  //
+  // A segunda guarda cobre o outro caso: se o usuário rolou para ler o
+  // histórico, mensagem nova não deve arrancá-lo de onde estava.
+  useEffect(() => {
+    const primeiraCarga = paginasVistas.current === 0;
+    const carregouAntigas = !primeiraCarga && paginas > paginasVistas.current;
+    paginasVistas.current = paginas;
+    if (carregouAntigas) return;
+
+    // A guarda de distância NÃO vale na primeira carga: ali o scroller ainda
+    // está no topo por definição, e tratá-lo como "usuário lendo o histórico"
+    // abriria a conversa na mensagem mais antiga da página em vez da mais nova
+    // (medido: a thread abria em msg#15 em vez de msg#64).
+    if (!primeiraCarga) {
+      const sc = scrollerRef.current;
+      if (sc && sc.scrollHeight - sc.scrollTop - sc.clientHeight > 120) return;
+    }
+
+    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [items.length, conversationId, paginas]);
 
   if (!conversationId) {
     return (
@@ -150,7 +196,7 @@ export function ChatThread({
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex-1 overflow-y-auto py-2">
+      <div ref={scrollerRef} className="flex-1 overflow-y-auto py-2">
         {q.hasNextPage && (
           <div className="flex justify-center py-2">
             <Button
@@ -184,6 +230,8 @@ export function ChatThread({
                   {item.kind === "note" ? (
                     <NoteCard
                       note={item.data}
+                      // Só o autor ou manager+ vê o excluir — o backend barra o resto (403),
+                      // então não mostramos um botão que daria erro.
                       onDelete={
                         item.data.created_by_user_id === currentUser.id || canManage
                           ? () => deleteNote.mutate(item.data.id)
@@ -194,6 +242,12 @@ export function ChatThread({
                     <MessageBubble
                       message={item.data}
                       debugCitations={debugCitations}
+                      onResponder={onResponder}
+                      // A citada sai da MESMA lista já carregada: buscar no servidor
+                      // por cada citação faria uma consulta por bolha. Quando a
+                      // citada é antiga demais e ficou fora da página, o fio some —
+                      // que é melhor que segurar a conversa esperando.
+                      citada={porId.get(item.data.reply_to_message_id ?? "") ?? null}
                     />
                   )}
                   {showDividerAfter && (

@@ -95,6 +95,25 @@ Quando terminar, diga à pessoa para:
 Estes pontos já foram descobertos e corrigidos no `install.sh` / `docker-compose.prod.yml`.
 Se mesmo assim aparecerem, aqui está o diagnóstico pronto:
 
+0. **O VPS já tem um proxy (Traefik) nas portas 80/443** — acontece na Hostinger, Coolify,
+   Dokploy e afins: o painel entrega a VPS com um Traefik próprio, que é quem dá o HTTPS
+   automático a tudo que ele instala. O Caddy do kit quer as MESMAS portas, então o
+   `up -d` falha no bind e a instalação morre no meio. O `install.sh` **detecta isso
+   sozinho** (procura um contêiner Traefik rodando), grava `REVERSE_PROXY=traefik` no
+   `.env` e passa a subir com o override `docker-compose.traefik.yml` — que desliga o
+   Caddy e publica o app por labels do Traefik. **Nunca desligue o Traefik da hospedagem**
+   para "liberar" as portas: isso quebra as automações do painel dela. Se precisar rodar
+   compose na mão nessa instalação, inclua sempre os dois arquivos:
+   `docker compose -f docker-compose.prod.yml -f docker-compose.traefik.yml ...`
+   A detecção é automática quando o Traefik PUBLICA as portas (a coluna `Ports` do
+   `docker ps` é a prova). Quando ele roda em `--network host` (Hostinger), essa coluna sai
+   vazia para todo mundo e a eleição vira suspeita, não prova — aí o instalador confirma
+   com quem está na frente do terminal e, em `--yes`, para pedindo `REVERSE_PROXY=traefik`
+   no `.env`. Publicar o CRM atrás do proxy errado instala "com sucesso" um site mudo.
+   Nesse cenário a rede a apontar não é a do proxy (ele não está em rede nenhuma do
+   Docker): o kit cria e usa a bridge `<nome do projeto no compose>_proxy`, e tanto o
+   `install.sh` quanto o `update.sh` a recriam se ela sumir (`garantir_rede_do_proxy`, em
+   `_common.sh`).
 1. **Firewall te tranca fora do VPS** — o `ufw` padrão libera a porta **22**, mas alguns
    VPS da HostGator usam SSH em porta **custom** (ex.: `22022`). SEMPRE confira a porta do
    SSH atual (`ss -tlnp | grep sshd` ou o número que você usou pra conectar) e libere ELA
@@ -113,7 +132,9 @@ Se mesmo assim aparecerem, aqui está o diagnóstico pronto:
    `install.sh` é idempotente: ignora o 422 e encontra o usuário pelo e-mail. Não trava.
 7. **`/api/v1/health` diz "unhealthy" mas o site funciona** — versões antigas checavam
    rotas erradas (`/ping`, `/api/health`). A imagem atual já checa as rotas certas; se ver
-   isso, garanta que a imagem do app está na tag `latest` mais nova (`bash update.sh`).
+   isso, garanta que o servidor está na versão mais nova (`bash update.sh`). Não troque
+   `APP_IMAGE` para `latest` na mão: aqui `latest` é o topo do desenvolvimento, não a
+   última versão lançada, e o `update.sh` já instala a versão certa.
 8. **Criar agente de IA: seletor de modelo vazio em todo provedor** — `baseline.sql` é um
    dump `--schema-only`, não traz o seed de 8 modelos (`ai_models`, migration 0023). O
    `baseline.sql` atual já inclui esse insert (apêndice idempotente no fim do arquivo);
@@ -124,8 +145,8 @@ Se mesmo assim aparecerem, aqui está o diagnóstico pronto:
    cria a identidade canônica (`contacts.wa_identity`), deduplica contatos/conversas
    existentes e trava a re-duplicação. É **auto-curativo** — quem já tinha o CRM bagunçado
    só precisa rodar `bash update.sh` (re-aplica o baseline, que deduplica e conserta) e
-   reiniciar o app. Se persistir após o update, confirme que o app está na imagem `latest`
-   nova (o código dos webhooks em `lib/waha/ingest.ts` precisa acompanhar o schema).
+   reiniciar o app. Se persistir após o update, confirme pelo `/api/v1/health` que a versão
+   subiu (o código dos webhooks em `lib/waha/ingest.ts` precisa acompanhar o schema).
 
 ## Depois de instalado
 

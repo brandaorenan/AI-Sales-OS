@@ -15,6 +15,7 @@ import {
   PIPE,
   USER_ID,
   authOk,
+  comAutoria,
   etapa,
   funil,
   makeDb,
@@ -175,7 +176,7 @@ describe("PATCH /api/v1/pipelines/[id]/stages/[stageId]", () => {
 
     expect(res.status).toBe(200);
     expect(db.escritas).toHaveLength(1);
-    expect(db.escritas[0]?.patch).toEqual({ name: "Orçamento" });
+    expect(db.escritas[0]?.patch).toEqual(comAutoria({ name: "Orçamento" }));
     expect(db.escritas[0]?.filtros).toContainEqual(["id", "e2"]);
     expect(db.escritas[0]?.filtros).toContainEqual(["organization_id", ORG_ID]);
     expect(db.escritas[0]?.filtros).toContainEqual(["pipeline_id", PIPE]);
@@ -218,8 +219,8 @@ describe("PATCH /api/v1/pipelines/[id]/stages/[stageId]", () => {
     expect(db.escritas.map((e) => [e.filtros.find(([c]) => c === "id")?.[1], e.patch])).toEqual([
       // O passo do assistente acompanha a marcação: sem isso o CHECK
       // `crm_stages_hint_coerente_com_won_lost` estoura com 23514.
-      ["e3", { is_won: false, agent_stage_hint: null }],
-      ["e2", { is_won: true, agent_stage_hint: "won" }],
+      ["e3", comAutoria({ is_won: false, agent_stage_hint: null })],
+      ["e2", comAutoria({ is_won: true, agent_stage_hint: "won" })],
     ]);
     expect(db.eventos).toEqual([
       "start:crm_stages:0",
@@ -250,7 +251,7 @@ describe("PATCH /api/v1/pipelines/[id]/stages/[stageId]", () => {
 
     expect(res.status).toBe(200);
     expect(db.escritas).toHaveLength(1);
-    expect(db.escritas[0]?.patch).toEqual({ position: 3500 });
+    expect(db.escritas[0]?.patch).toEqual(comAutoria({ position: 3500 }));
   });
 
   it("reordenar para o começo: depois_de null vai antes da primeira", async () => {
@@ -260,7 +261,7 @@ describe("PATCH /api/v1/pipelines/[id]/stages/[stageId]", () => {
     const res = await PATCH(reqPatch({ depois_de: null }), ctx());
 
     expect(res.status).toBe(200);
-    expect(db.escritas[0]?.patch).toEqual({ position: 0 });
+    expect(db.escritas[0]?.patch).toEqual(comAutoria({ position: 0 }));
   });
 
   it("reordenar depois de uma etapa que não existe → 422, e nenhuma escrita", async () => {
@@ -301,7 +302,7 @@ describe("PATCH /api/v1/pipelines/[id]/stages/[stageId]", () => {
 
     expect(res.status).toBe(200);
     expect(db.escritas).toHaveLength(1);
-    expect(db.escritas[0]?.patch).toEqual({ name: "Orçamento", position: 3500 });
+    expect(db.escritas[0]?.patch).toEqual(comAutoria({ name: "Orçamento", position: 3500 }));
   });
 
   it("renomear junto com a marcação → o nome viaja no update do alvo, não num terceiro", async () => {
@@ -315,8 +316,8 @@ describe("PATCH /api/v1/pipelines/[id]/stages/[stageId]", () => {
     // motivo — e, entre ela e a marcação, uma janela em que o funil está sem
     // etapa de ganho gravada.
     expect(db.escritas.map((e) => [e.filtros.find(([c]) => c === "id")?.[1], e.patch])).toEqual([
-      ["e3", { is_won: false }],
-      ["e2", { is_won: true, name: "Fechado" }],
+      ["e3", comAutoria({ is_won: false })],
+      ["e2", comAutoria({ is_won: true, name: "Fechado" })],
     ]);
   });
 
@@ -475,7 +476,13 @@ describe("PATCH — política de expiração do contexto (Spec 16 §9.1)", () =>
 
     expect(res.status).toBe(200);
     expect(db.escritas).toHaveLength(1);
-    expect(db.escritas[0]?.patch).toEqual({ resets_context: true, context_reset_after_days: 14 });
+    // `objectContaining` e não `toEqual` exato: desde a migration 0101 todo
+    // update de configuração carrega a AUTORIA junto (`last_change_actor_kind`
+    // e `last_change_at`), que é do módulo compartilhado e não desta feature.
+    expect(db.escritas[0]?.patch).toEqual(
+      expect.objectContaining({ resets_context: true, context_reset_after_days: 14 }),
+    );
+    expect(db.escritas[0]?.patch).toMatchObject({ last_change_actor_kind: "user" });
 
     const body = (await res.json()) as {
       data: { etapas: Array<{ id: string; resets_context: boolean; context_reset_after_days: number }> };
@@ -587,7 +594,7 @@ describe("DELETE /api/v1/pipelines/[id]/stages/[stageId]", () => {
       "crm_lead_activities",
     ]);
     expect(db.escritas[0]?.patch).toEqual({ stage_id: "e1" });
-    expect(db.escritas[1]?.patch).toEqual({ is_archived: true });
+    expect(db.escritas[1]?.patch).toEqual(comAutoria({ is_archived: true }));
     expect(db.eventos.slice(0, 4)).toEqual([
       "start:crm_leads:0",
       "end:crm_leads:0",

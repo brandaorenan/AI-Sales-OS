@@ -22,6 +22,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 import { test, expect, type Page, type Locator } from "@playwright/test";
+import { carregarEnvLocal } from "../../scripts/lib/env-de-teste";
 
 // Segue o dev server do harness (playwright.config webServer) — nunca hardcodar
 // porta: o config usa E2E_PORT (default 3001).
@@ -46,8 +47,8 @@ function loadCreds(): Creds {
 }
 
 function loadInternalSecret(): string {
-  const envFile = fs.readFileSync(path.join(process.cwd(), ".env.local"), "utf8");
-  const match = envFile.match(/^INTERNAL_SECRET=(.*)$/m);
+  const envDeTeste = carregarEnvLocal();
+  const match = [null, envDeTeste.INTERNAL_SECRET];
   const secret = match?.[1]?.trim();
   if (!secret) throw new Error("INTERNAL_SECRET não encontrado em .env.local");
   return secret;
@@ -193,19 +194,31 @@ test.describe("webhooks & automações — fluxo completo", () => {
       const directBody = (await directRes.json()) as { data: { lead_id: string } };
       expect(directBody.data.lead_id).toBeTruthy();
 
-      // --- Step 6: drena o event_log (até 3 ticks — trigger legado duplica evento) ---
+      // --- Step 6: drena até a execução EXISTIR (mesma régua da spec da verdade) ---
+      //
+      // Três ticks fixos falhavam quando a fila do event_log já tinha lixo de
+      // specs anteriores na mesma parte do job: o drain processava os velhos
+      // e o lead deste teste ainda estava pending quando a aba era lida.
       const internalSecret = loadInternalSecret();
-      for (let i = 0; i < 3; i++) {
-        // Batch de até 50 eventos pendentes, cada um com handlers que fazem
-        // vários round-trips de DB (e potencialmente WAHA/IA) — bem mais lento
-        // que uma ação de UI; timeout maior que o actionTimeout padrão do teste.
+      let execucoes = 0;
+      for (let tentativa = 0; tentativa < 10 && execucoes === 0; tentativa++) {
         const drainRes = await request.post(`${APP_URL}/api/v1/cron/event-log-drain`, {
           headers: { Authorization: `Bearer ${internalSecret}` },
           timeout: 60_000,
         });
         expect(drainRes.ok()).toBeTruthy();
-        await page.waitForTimeout(700);
+        const resposta = await page.request.get(`${APP_URL}/api/v1/automation-rules/runs?limit=50`);
+        expect(resposta.ok()).toBeTruthy();
+        const corpo = (await resposta.json()) as {
+          data: Array<{ automation_rules: { name: string } | null }>;
+        };
+        execucoes = corpo.data.filter((r) => r.automation_rules?.name === RULE_NAME).length;
+        if (execucoes === 0) await page.waitForTimeout(700);
       }
+      expect(
+        execucoes,
+        "a automação não registrou execução nenhuma — a regra não rodou",
+      ).toBeGreaterThan(0);
 
       // --- Step 7: aba Atividade mostra a run com sucesso ---
       // A regra não tem condição — dispara tanto pro "Lead de Teste" (passo 3)
@@ -214,28 +227,28 @@ test.describe("webhooks & automações — fluxo completo", () => {
       await page.getByRole("tab", { name: "Atividade" }).click();
       const runTitle = page.getByText(RULE_NAME, { exact: true }).first();
       const runCard = cardOf(runTitle);
-      let found = false;
-      for (let attempt = 0; attempt < 12; attempt++) {
-        if ((await runCard.count()) > 0 && (await runCard.getByText("Sucesso").count()) > 0) {
-          found = true;
-          break;
-        }
-        await page.getByRole("button", { name: "Atualizar" }).click();
-        await page.waitForTimeout(1000);
-      }
-      expect(found, "run da automação não apareceu com status Sucesso na aba Atividade").toBe(
-        true,
-      );
+      await expect(
+        page.getByText(RULE_NAME, { exact: true }).first(),
+        "a execução existe no banco mas a aba Atividade não a mostra",
+      ).toBeVisible({ timeout: 20_000 });
       await expect(runCard.getByText("Sucesso")).toBeVisible();
 
       // --- Step 8: /app/pipelines/{pipelineId} mostra o card com a tag ---
       await page.goto(`${APP_URL}/app/pipelines/${pipelineId}`);
       const leadHeading = page.getByRole("heading", { name: LEAD_NAME });
       await expect(leadHeading).toBeVisible({ timeout: 15_000 });
+      // A TAG VIVE NO `title` DO CARD, não como texto visível.
+      //
+      // `KanbanCard.tsx` publica `title={`Tags: ...`}` com um comentário que
+      // declara a intenção: "Tags saem do card (Lei A): ficam a um hover, sem
+      // ocupar altura". Esta spec afirmava texto visível — ela é que envelheceu
+      // junto com o desenho, e ninguém soube porque ela nunca rodou em gate
+      // (issue #63). Afirmar o `title` mantém a garantia que importa: a tag que
+      // a automação aplicou CHEGOU ao card.
       const leadCard = leadHeading.locator(
-        "xpath=ancestor::div[contains(concat(' ', normalize-space(@class), ' '), ' border-border ')][1]",
+        "xpath=ancestor::div[@role='group'][1]",
       );
-      await expect(leadCard.getByText(TAG)).toBeVisible();
+      await expect(leadCard).toHaveAttribute("title", new RegExp(`Tags:.*${TAG}`));
 
       // --- Step 9: AGENT não vê "Webhooks" e é redirecionado ---
       const agentContext = await browser.newContext();

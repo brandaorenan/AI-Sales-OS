@@ -12,12 +12,16 @@ mkdir -p "$BACKUP_DIR"
 ts="$(date +%Y%m%d-%H%M%S)"
 
 step "Dump do banco → $BACKUP_DIR/db-$ts.sql.gz"
-docker run --rm postgres:17-alpine pg_dump "$SUPABASE_DB_URL" --no-owner --no-privileges \
+# Pela conexão de SCHEMA (url_do_schema), não pela do app: `pg_dump` só despeja
+# o que a role enxerga, e com uma role menor — a que recomendamos no `.env` de
+# quem usa Supabase próprio — o backup sai PARCIAL e sai verde. Falha silenciosa
+# de backup é a pior das falhas: só aparece na hora de restaurar.
+docker run --rm postgres:17-alpine pg_dump "$(url_do_schema)" --no-owner --no-privileges \
   | gzip > "$BACKUP_DIR/db-$ts.sql.gz"
 c_grn "✓ banco: $(du -h "$BACKUP_DIR/db-$ts.sql.gz" | awk '{print $1}')"
 
 step "Snapshot das sessões do WhatsApp → $BACKUP_DIR/waha-$ts.tgz"
-vol="$(docker compose -f "$COMPOSE" config --volumes 2>/dev/null | grep -m1 waha-data || echo '')"
+vol="$(dc config --volumes 2>/dev/null | grep -m1 waha-data || echo '')"
 proj="$(basename "$PROJECT_DIR" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9')"
 docker run --rm -v "${proj}_waha-data:/data:ro" -v "$BACKUP_DIR:/out" alpine:3.20 \
   tar czf "/out/waha-$ts.tgz" -C /data . 2>/dev/null \

@@ -40,15 +40,20 @@ async function run(req: NextRequest): Promise<Response> {
   const log = createLogger();
   try {
     const result = await scanStaleEvents(pool, log);
-    void audit({
-      action: "event_log.stale_watcher_run",
-      organizationId: null,
-      requestId,
-      metadata: {
-        ...result,
-        duration_ms: Date.now() - startedAt,
-      },
-    });
+    // Rodada que não abriu nenhum agent_inbox_items novo não é mutação — cron
+    // de minuto em minuto que audita sempre grava ~43.200 linhas/mês numa
+    // instalação parada, numa tabela append-only.
+    if (result.alarmed > 0) {
+      void audit({
+        action: "event_log.stale_watcher_run",
+        organizationId: null,
+        requestId,
+        metadata: {
+          ...result,
+          duration_ms: Date.now() - startedAt,
+        },
+      });
+    }
     return ok({ ...result, duration_ms: Date.now() - startedAt }, { requestId });
   } catch (err) {
     log.error("stale watcher falhou", {

@@ -15,6 +15,9 @@ import { TimelineView } from "@/components/contacts/TimelineView";
 import { EditContactDialog } from "@/components/contacts/EditContactDialog";
 import { AnonymizeDialog } from "@/components/contacts/AnonymizeDialog";
 import { ResetConversationDialog } from "@/components/contacts/ResetConversationDialog";
+import { PropostasDeDado } from "@/components/contacts/PropostasDeDado";
+import { ConversaNoDossie } from "@/components/kanban/ConversaNoDossie";
+import { rotuloDoContato } from "@/lib/contacts/rotulo-do-contato";
 
 interface Props {
   contactId: string;
@@ -52,8 +55,10 @@ export function ContactDetailClient({ contactId }: Props) {
     user.is_platform_admin ||
     (activeOrg && ROLE_RANK[activeOrg.role] >= ROLE_RANK.admin);
 
-  const displayName =
-    contact.display_name?.trim() || contact.name?.trim() || "Sem nome";
+  // Uma decisão, um lugar (lib/contacts/rotulo-do-contato.ts). Esta tela era
+  // uma das DUAS que ignoravam o telefone: contato com número e sem nome
+  // aparecia como "Sem nome" aqui e com o número no inbox.
+  const displayName = rotuloDoContato(contact);
 
   return (
     <div className="space-y-4 p-6">
@@ -72,9 +77,12 @@ export function ContactDetailClient({ contactId }: Props) {
         </div>
       )}
 
-      <header className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">{displayName}</h1>
+      <header className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
+        <div className="min-w-0">
+          {/* Sem truncar: nome é dado que a tela existe pra mostrar, e cortar
+              com reticências sem um jeito de ver o resto violaria o princípio
+              de nunca esconder informação crítica. Deixa quebrar linha. */}
+          <h1 className="text-2xl font-semibold tracking-tight break-words">{displayName}</h1>
           <div className="mt-1 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
             {contact.email && <span>{contact.email}</span>}
             {contact.email && contact.phone_number && <span>•</span>}
@@ -90,7 +98,7 @@ export function ContactDetailClient({ contactId }: Props) {
         </div>
         {!contact.is_anonymized && (
           <div className="flex flex-wrap items-center gap-2">
-            <Button variant="outline" onClick={() => setEditOpen(true)}>
+            <Button variant="outline" onClick={() => setEditOpen(true)} className="shrink-0">
               <PencilSimple size={16} weight="bold" aria-hidden />
               <span>Editar</span>
             </Button>
@@ -102,6 +110,20 @@ export function ContactDetailClient({ contactId }: Props) {
           </div>
         )}
       </header>
+
+      <ConversaNoDossie conversa={contact.conversa} />
+
+      {/* ANTES das abas, e não dentro de uma delas: é o único conteúdo desta
+          tela que PEDE uma ação. Enterrado numa aba, viraria pendência que só
+          quem já sabe que existe encontra — e a fila deixaria de ser fila.
+          Some sozinho quando não há nada aguardando. */}
+      {!contact.is_anonymized && (
+        <PropostasDeDado
+          contactId={contactId}
+          podeDecidir={Boolean(activeOrg && ROLE_RANK[activeOrg.role] >= ROLE_RANK.agent)}
+          aoDecidir={() => void q.refetch()}
+        />
+      )}
 
       <Tabs defaultValue="overview">
         <TabsList>

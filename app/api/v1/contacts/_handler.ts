@@ -17,7 +17,9 @@ import type {
   ContactCreate,
   ContactPatch,
   ContactListQuery,
+  ContactListQueryParams,
 } from "@/lib/schemas";
+import { contactListQuerySchema } from "@/lib/schemas";
 
 type SB = SupabaseClient;
 
@@ -32,8 +34,7 @@ const ROLE_RANK: Record<string, number> = {
 };
 
 interface CursorPayload {
-  last_activity_at: string | null;
-  created_at: string;
+  sort: string | null;
   id: string;
 }
 
@@ -43,9 +44,14 @@ function encodeCursor(p: CursorPayload): string {
 function decodeCursor(raw: string): CursorPayload | null {
   try {
     const json = Buffer.from(raw, "base64url").toString("utf8");
-    const parsed = JSON.parse(json) as CursorPayload;
-    if (typeof parsed.id !== "string" || typeof parsed.created_at !== "string") return null;
-    return parsed;
+    const parsed = JSON.parse(json) as CursorPayload & {
+      last_activity_at?: string | null;
+      created_at?: string | null;
+    };
+    if (typeof parsed.id !== "string") return null;
+    // Cursores legados (só created_at) ou do formato anterior (last_activity_at).
+    const sort = parsed.sort ?? parsed.last_activity_at ?? parsed.created_at ?? null;
+    return { sort, id: parsed.id };
   } catch {
     return null;
   }
@@ -83,22 +89,41 @@ export interface ListContactsResult {
 export async function listContactsHandler(
   supabase: SB,
   ctx: HandlerCtx,
-  q: ContactListQuery,
+  raw: ContactListQueryParams,
 ): Promise<ListContactsResult> {
+  const q: ContactListQuery = contactListQuerySchema.parse(raw);
+  const sortCol = q.order_by;
+  const asc = q.order_dir === "asc";
+
   let query = supabase
     .from("contacts")
     .select(SELECT_COLS)
     .eq("organization_id", ctx.organization_id)
-    .order("last_activity_at", { ascending: false, nullsFirst: false })
-    .order("created_at", { ascending: false })
-    .order("id", { ascending: false })
+    .order(sortCol, { ascending: asc, nullsFirst: false })
+    .order("id", { ascending: asc })
     .limit(q.limit + 1);
 
   if (q.search) {
-    const s = q.search.trim();
-    const digits = s.replace(/\D/g, "");
+    // ⚠️ `%` e `_` são curingas do LIKE, e `,`/`(`/`)` são delimitadores do DSL
+    // do `.or()` — um nome com vírgula ("Silva, Maria") injetaria uma condição
+    // extra na string do filtro. Mesmo escape de conversations/_handler.ts.
+    const s = q.search.trim().replace(/[%_]/g, (m) => `\\${m}`).replace(/[,()]/g, " ");
+    const digits = q.search.replace(/\D/g, "");
     const orParts = [
       `name.ilike.%${s}%`,
+      // ⚠️ `display_name` ESTAVA DE FORA, e é a coluna que a tela MOSTRA.
+      //
+      // Contato que entra pelo WhatsApp nasce só com `display_name` (o pushName);
+      // `name` fica nulo até alguém editar à mão. `resolveContactName` e o resto
+      // da UI preferem `display_name` — então a busca ignorava exatamente o nome
+      // que o usuário vê e digita. Medido nesta instalação: 15 de 33 contatos
+      // têm `display_name` e nenhum `name`.
+      //
+      // Achado por um turno de agente REAL (IA 360 · wave 2): pedido para marcar
+      // um retorno para "Cliente Retorno E2E", o modelo chamou esta busca, levou
+      // zero resultados para um contato que EXISTE, e desistiu — a demanda
+      // morreria por uma coluna faltando no OR.
+      `display_name.ilike.%${s}%`,
       `email.ilike.%${s}%`,
       `phone_number.ilike.%${s}%`,
     ];
@@ -115,9 +140,16 @@ export async function listContactsHandler(
     if (!c) {
       throw new ApiError(400, "invalid_cursor", undefined, ctx.requestId, "Cursor inválido.");
     }
-    query = query.or(
-      `created_at.lt.${c.created_at},and(created_at.eq.${c.created_at},id.lt.${c.id})`,
-    );
+    const op = asc ? "gt" : "lt";
+    if (c.sort) {
+      query = query.or(
+        `${sortCol}.${op}.${c.sort},and(${sortCol}.eq.${c.sort},id.${op}.${c.id})`,
+      );
+    } else {
+      // Página na região de sort NULL (nulls last): pagina só por id.
+      query = query.is(sortCol, null);
+      query = asc ? query.gt("id", c.id) : query.lt("id", c.id);
+    }
   }
 
   const { data, error } = await query;
@@ -132,13 +164,63 @@ export async function listContactsHandler(
   const nextCursor =
     hasMore && last
       ? encodeCursor({
-          last_activity_at: last.last_activity_at,
-          created_at: last.created_at,
+          sort: (last[sortCol] as string | null) ?? null,
           id: last.id,
         })
       : null;
 
-  return { contacts: page, cursor: nextCursor, has_more: hasMore };
+  const { contacts, error: convErr } = await withConversas(supabase, ctx.organization_id, page);
+  if (convErr) {
+    throw new ApiError(500, "internal_error", undefined, ctx.requestId, convErr);
+  }
+
+  return { contacts, cursor: nextCursor, has_more: hasMore };
+}
+
+/**
+ * Anexa a conversa mais recente de cada contato — o atalho da lista para o inbox.
+ * Mesma regra do quadro Kanban (`pipelines/[id]/board/route.ts:withConversas`).
+ */
+async function withConversas(
+  supabase: SB,
+  organizationId: string,
+  contacts: Contact[],
+): Promise<{ contacts: Contact[]; error: string | null }> {
+  const contactIds = contacts.map((c) => c.id);
+  if (contactIds.length === 0) return { contacts, error: null };
+
+  const { data, error } = await supabase
+    .from("conversations")
+    .select("id, contact_id, last_message_preview, last_message_at, unread_count_for_assignee")
+    .eq("organization_id", organizationId)
+    .in("contact_id", contactIds)
+    .order("last_message_at", { ascending: false, nullsFirst: false });
+  if (error) return { contacts, error: error.message };
+
+  const porContato = new Map<string, NonNullable<Contact["conversa"]>>();
+  for (const row of (data ?? []) as Array<{
+    id: string;
+    contact_id: string;
+    last_message_preview: string | null;
+    last_message_at: string | null;
+    unread_count_for_assignee: number | null;
+  }>) {
+    if (porContato.has(row.contact_id)) continue;
+    porContato.set(row.contact_id, {
+      id: row.id,
+      preview: row.last_message_preview,
+      last_message_at: row.last_message_at,
+      unread: row.unread_count_for_assignee ?? 0,
+    });
+  }
+
+  return {
+    contacts: contacts.map((contact) => {
+      const conversa = porContato.get(contact.id);
+      return conversa ? { ...contact, conversa } : contact;
+    }),
+    error: null,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -218,8 +300,16 @@ export async function getContactHandler(
     }
   }
 
+  const { contacts: enriched, error: convErr } = await withConversas(supabase, ctx.organization_id, [
+    contact,
+  ]);
+  if (convErr) {
+    throw new ApiError(500, "internal_error", undefined, ctx.requestId, convErr);
+  }
+  const contactWithConversa = enriched[0] ?? contact;
+
   return {
-    ...contact,
+    ...contactWithConversa,
     cpf_available: !!contact.cpf_hash,
     cpf_decrypted: cpfDecrypted,
     cpf_decrypt_denied: cpfDecryptDenied || undefined,
@@ -316,7 +406,14 @@ export async function patchContactHandler(
 ): Promise<Contact> {
   const { data: existing, error: selErr } = await supabase
     .from("contacts")
-    .select("id, organization_id, is_anonymized, tags")
+    // ⚠️ Os campos sensíveis entram aqui para existir o **`from`** da regra L-06
+    // ("audit com who/what/which/when/**from/to**", exceção: "Nenhuma"). Antes
+    // este select pedia só `id, organization_id, is_anonymized, tags`, e o audit
+    // gravava apenas os NOMES dos campos alterados — quem quisesse saber qual
+    // e-mail foi substituído não tinha onde olhar. `consent` vem junto porque o
+    // patch dele passou a ser MERGE (ver abaixo), e merge precisa do estado
+    // anterior.
+    .select("id, organization_id, is_anonymized, tags, email, phone_number, name, display_name, consent")
     .eq("id", contactId)
     .maybeSingle();
 
@@ -339,16 +436,36 @@ export async function patchContactHandler(
   const patch: Record<string, unknown> = {};
   if (input.name !== undefined) patch.name = input.name;
   if (input.display_name !== undefined) patch.display_name = input.display_name;
-  if (input.email !== undefined) {
-    patch.email = input.email;
-    patch.email_normalized = input.email ? input.email.trim().toLowerCase() : null;
-  }
+  // `email_normalized` NÃO entra no patch — é `GENERATED ALWAYS AS
+  // (lower(trim(email))) STORED` (baseline.sql:1349), e o Postgres RECUSA
+  // qualquer atribuição a coluna gerada (SQLSTATE 428C9), abortando o UPDATE
+  // inteiro. Efeito medido: salvar o email de um contato pela tela devolvia 500,
+  // e junto morriam todos os outros campos do mesmo PATCH.
+  //
+  // O banco deriva a coluna sozinho — era só não escrever nela.
+  if (input.email !== undefined) patch.email = input.email;
   if (input.phone_number !== undefined) patch.phone_number = input.phone_number;
   if (input.birthdate !== undefined) patch.birthdate = input.birthdate;
   if (input.tags !== undefined) patch.tags = input.tags;
   if (input.source !== undefined) patch.source = input.source;
   if (input.source_metadata !== undefined) patch.source_metadata = input.source_metadata;
-  if (input.consent !== undefined) patch.consent = input.consent;
+  if (input.consent !== undefined) {
+    // MERGE por finalidade, nunca substituição.
+    //
+    // `contacts.consent` é um mapa de finalidades — a regra L-05 nomeia
+    // `marketing`, `transactional` e `profiling`. Atribuir o objeto inteiro
+    // (o que esta linha fazia) significa que gravar UMA finalidade APAGA as
+    // outras duas: registrar o consentimento transacional de alguém apagaria em
+    // silêncio o consentimento de marketing que essa pessoa tinha dado.
+    //
+    // Perda de consentimento não é bug barulhento — é a base legal de um envio
+    // futuro sumindo sem ninguém ver.
+    const anterior = ((existing as { consent?: Record<string, unknown> }).consent ?? {}) as Record<
+      string,
+      unknown
+    >;
+    patch.consent = { ...anterior, ...input.consent };
+  }
   if (input.cpf !== undefined) {
     patch.cpf_hash = hashCpf(input.cpf);
     const enc = await encryptCpfSql(supabase, input.cpf);
@@ -391,6 +508,31 @@ export async function patchContactHandler(
   const a = actorAuditPayload(ctx.actor);
   const fields = Object.keys(patch).filter((k) => k !== "updated_at");
 
+  /**
+   * O par ANTES/DEPOIS dos campos que a L-06 nomeia.
+   *
+   * Grafia `old_`/`new_` seguindo o precedente de `team.role_changed`
+   * (app/api/v1/team/[user_id]/_shared.ts:93-94), que tem teste-guarda. O repo
+   * tem mais de uma grafia para este conceito; escolher a que já é vigiada evita
+   * criar a quinta.
+   *
+   * Só os campos SENSÍVEIS e só quando mudaram: o audit é lido por humano e
+   * despejar o objeto inteiro afogaria o que importa. `consent` entra como
+   * lista de finalidades tocadas, não como jsonb cru — o valor é um mapa e o
+   * que se audita é qual finalidade mudou.
+   */
+  const antes = existing as Record<string, unknown>;
+  const sensiveis: Record<string, unknown> = {};
+  for (const campo of ["email", "phone_number", "name", "display_name"]) {
+    if (patch[campo] !== undefined && patch[campo] !== antes[campo]) {
+      sensiveis[`old_${campo}`] = antes[campo] ?? null;
+      sensiveis[`new_${campo}`] = patch[campo] ?? null;
+    }
+  }
+  if (input.consent !== undefined) {
+    sensiveis.consent_scopes = Object.keys(input.consent);
+  }
+
   await supabase
     .rpc("emit_event", {
       p_event_type: "contact.updated",
@@ -430,7 +572,7 @@ export async function patchContactHandler(
     resourceType: "contact",
     resourceId: contact.id,
     requestId: ctx.requestId,
-    metadata: { ...a.metadataActor, fields },
+    metadata: { ...a.metadataActor, fields, ...sensiveis },
   });
 
   return contact;

@@ -5,8 +5,11 @@
 import * as React from "react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AgentForm, type ChannelSessionLite } from "./AgentForm";
+import type { CoberturaPorFunil } from "./FunisDoAgente";
+import type { FunilDaResposta } from "@/hooks/pipelines/usePipelines";
 import { TestPanel } from "./TestPanel";
 import { RunsTable } from "./RunsTable";
+import { UsoDasCapacidades } from "./UsoDasCapacidades";
 import { VersionHistory } from "./VersionHistory";
 import { ProposalsPanel } from "./ProposalsPanel";
 import type { AgentRow } from "@/hooks/ai/useAgent";
@@ -14,11 +17,20 @@ import type { AgentVersionRow } from "@/hooks/ai/useAgentVersions";
 import type { CredentialRow } from "@/hooks/ai/useCredentials";
 
 interface Props {
+  /** Funis da org, para a marcação de escopo do agente (spec 17 passo 3). */
+  funis?: FunilDaResposta[];
+  cobertura?: CoberturaPorFunil;
   agent: AgentRow;
   draft: AgentVersionRow | null;
   published: AgentVersionRow | null;
+  /** De onde o formulário se hidrata — ver `lib/ai/agents/versoes-da-tela.ts`. */
+  base?: AgentVersionRow | null;
+  /** Rascunho anterior à publicada: existe, mas não abre nem publica. */
+  draftObsoleto?: AgentVersionRow | null;
   versions: AgentVersionRow[];
   credentials: CredentialRow[];
+  /** Provedores cuja chave veio na instalação — ver `AgentForm`. */
+  provedoresDaInstalacao?: string[];
   channelSessions: ChannelSessionLite[];
   routerMembership?: { routerId: string; routerName: string } | null;
   readOnly?: boolean;
@@ -26,7 +38,7 @@ interface Props {
 
 export function AgentTabs(props: Props) {
   const [tab, setTab] = React.useState<
-    "configuration" | "test" | "runs" | "history" | "proposals"
+    "configuration" | "test" | "capacidades" | "runs" | "history" | "proposals"
   >("configuration");
   const hasVersion = !!(props.draft || props.published);
 
@@ -41,6 +53,7 @@ export function AgentTabs(props: Props) {
         <TabsTrigger value="test" disabled={!hasVersion}>
           Teste
         </TabsTrigger>
+        <TabsTrigger value="capacidades">Capacidades</TabsTrigger>
         <TabsTrigger value="runs">Execuções</TabsTrigger>
         <TabsTrigger value="history">Histórico</TabsTrigger>
         <TabsTrigger value="proposals">Propostas</TabsTrigger>
@@ -52,8 +65,13 @@ export function AgentTabs(props: Props) {
           agent={props.agent}
           draft={props.draft}
           published={props.published}
+          base={props.base}
+          draftObsoleto={props.draftObsoleto}
           credentials={props.credentials}
+          provedoresDaInstalacao={props.provedoresDaInstalacao}
           channelSessions={props.channelSessions}
+          funis={props.funis}
+          cobertura={props.cobertura}
           routerMembership={props.routerMembership}
           readOnly={props.readOnly}
         />
@@ -66,6 +84,10 @@ export function AgentTabs(props: Props) {
           published={props.published}
           readOnly={props.readOnly}
         />
+      </TabsContent>
+
+      <TabsContent value="capacidades" className="m-0">
+        <UsoDasCapacidades agentId={props.agent.id} active={tab === "capacidades"} />
       </TabsContent>
 
       <TabsContent value="runs" className="m-0">

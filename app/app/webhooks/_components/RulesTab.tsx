@@ -19,6 +19,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Robot, Plus, Trash, PencilSimple } from "@/lib/ui/icons";
+import { SeloDeAutoria } from "@/components/operacao/SeloDeAutoria";
 import {
   useAutomationRules,
   useUpdateAutomationRule,
@@ -102,8 +103,8 @@ export function RulesTab() {
 
   return (
     <div className="space-y-4 pt-4">
-      <div className="flex justify-end">
-        <Button onClick={openCreate}>
+      <div className="flex sm:justify-end">
+        <Button onClick={openCreate} className="w-full sm:w-auto">
           <Plus /> Nova automação
         </Button>
       </div>
@@ -121,6 +122,9 @@ export function RulesTab() {
               <p className="text-xs text-muted-foreground">
                 {r.actions.length} {r.actions.length === 1 ? "ação" : "ações"}
               </p>
+              {/* Uma regra ligada roda sozinha para sempre: quem a ligou é parte
+                  do estado dela, não um detalhe de auditoria. */}
+              <SeloDeAutoria kind={r.last_change_actor_kind} em={r.last_change_at} />
             </CardHeader>
             <CardContent className="flex items-center justify-between gap-2">
               <Switch

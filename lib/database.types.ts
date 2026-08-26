@@ -374,6 +374,9 @@ export type Database = {
           max_steps: number
           model: string
           multimodal_input: boolean
+          operator_enabled: boolean
+          operator_model: string | null
+          operator_tool_ids: string[]
           organization_id: string
           provider: string
           published_at: string | null
@@ -405,6 +408,9 @@ export type Database = {
           max_steps?: number
           model: string
           multimodal_input?: boolean
+          operator_enabled?: boolean
+          operator_model?: string | null
+          operator_tool_ids?: string[]
           organization_id: string
           provider: string
           published_at?: string | null
@@ -436,6 +442,9 @@ export type Database = {
           max_steps?: number
           model?: string
           multimodal_input?: boolean
+          operator_enabled?: boolean
+          operator_model?: string | null
+          operator_tool_ids?: string[]
           organization_id?: string
           provider?: string
           published_at?: string | null
@@ -572,6 +581,8 @@ export type Database = {
           alarm_threshold_pct: number
           current_month_consumed_cents: number
           current_period_start: string
+          enforcement_effective_at: string | null
+          enforcement_mode: string
           is_disabled: boolean
           is_throttled: boolean
           last_alarm_sent_at: string | null
@@ -584,6 +595,8 @@ export type Database = {
           alarm_threshold_pct?: number
           current_month_consumed_cents?: number
           current_period_start?: string
+          enforcement_effective_at?: string | null
+          enforcement_mode?: string
           is_disabled?: boolean
           is_throttled?: boolean
           last_alarm_sent_at?: string | null
@@ -596,6 +609,8 @@ export type Database = {
           alarm_threshold_pct?: number
           current_month_consumed_cents?: number
           current_period_start?: string
+          enforcement_effective_at?: string | null
+          enforcement_mode?: string
           is_disabled?: boolean
           is_throttled?: boolean
           last_alarm_sent_at?: string | null
@@ -726,7 +741,7 @@ export type Database = {
       }
       ai_invocations: {
         Row: {
-          agent_id: string
+          agent_id: string | null
           citations: Json
           completion_tokens: number
           conversation_id: string | null
@@ -746,7 +761,7 @@ export type Database = {
           total_tokens: number | null
         }
         Insert: {
-          agent_id: string
+          agent_id?: string | null
           citations?: Json
           completion_tokens?: number
           conversation_id?: string | null
@@ -766,7 +781,7 @@ export type Database = {
           total_tokens?: number | null
         }
         Update: {
-          agent_id?: string
+          agent_id?: string | null
           citations?: Json
           completion_tokens?: number
           conversation_id?: string | null
@@ -1279,7 +1294,7 @@ export type Database = {
           acting_as_platform_admin: boolean
           action: string
           actor_api_token_id: string | null
-          actor_ip: unknown
+          actor_ip: unknown | null
           actor_user_agent: string | null
           actor_user_id: string | null
           bypassed_rls: boolean
@@ -1295,7 +1310,7 @@ export type Database = {
           acting_as_platform_admin?: boolean
           action: string
           actor_api_token_id?: string | null
-          actor_ip?: unknown
+          actor_ip?: unknown | null
           actor_user_agent?: string | null
           actor_user_id?: string | null
           bypassed_rls?: boolean
@@ -1311,7 +1326,7 @@ export type Database = {
           acting_as_platform_admin?: boolean
           action?: string
           actor_api_token_id?: string | null
-          actor_ip?: unknown
+          actor_ip?: unknown | null
           actor_user_agent?: string | null
           actor_user_id?: string | null
           bypassed_rls?: boolean
@@ -1347,7 +1362,7 @@ export type Database = {
           expires_at: string | null
           id: string
           last_used_at: string | null
-          last_used_ip: unknown
+          last_used_ip: unknown | null
           name: string
           organization_id: string
           prefix: string
@@ -1363,7 +1378,7 @@ export type Database = {
           expires_at?: string | null
           id?: string
           last_used_at?: string | null
-          last_used_ip?: unknown
+          last_used_ip?: unknown | null
           name: string
           organization_id: string
           prefix: string
@@ -1379,7 +1394,7 @@ export type Database = {
           expires_at?: string | null
           id?: string
           last_used_at?: string | null
-          last_used_ip?: unknown
+          last_used_ip?: unknown | null
           name?: string
           organization_id?: string
           prefix?: string
@@ -1503,6 +1518,8 @@ export type Database = {
           created_by_user_id: string | null
           id: string
           is_active: boolean
+          last_change_actor_kind: string | null
+          last_change_at: string | null
           last_run_at: string | null
           name: string
           organization_id: string
@@ -1517,6 +1534,8 @@ export type Database = {
           created_by_user_id?: string | null
           id?: string
           is_active?: boolean
+          last_change_actor_kind?: string | null
+          last_change_at?: string | null
           last_run_at?: string | null
           name: string
           organization_id: string
@@ -1531,6 +1550,8 @@ export type Database = {
           created_by_user_id?: string | null
           id?: string
           is_active?: boolean
+          last_change_actor_kind?: string | null
+          last_change_at?: string | null
           last_run_at?: string | null
           name?: string
           organization_id?: string
@@ -1783,6 +1804,7 @@ export type Database = {
       }
       channel_sessions: {
         Row: {
+          archived_at: string | null
           consecutive_health_fails: number
           created_at: string
           created_by: string | null
@@ -1810,6 +1832,7 @@ export type Database = {
           webhook_secret_encrypted: string
         }
         Insert: {
+          archived_at?: string | null
           consecutive_health_fails?: number
           created_at?: string
           created_by?: string | null
@@ -1837,6 +1860,7 @@ export type Database = {
           webhook_secret_encrypted: string
         }
         Update: {
+          archived_at?: string | null
           consecutive_health_fails?: number
           created_at?: string
           created_by?: string | null
@@ -1873,9 +1897,107 @@ export type Database = {
           },
         ]
       }
+      contact_field_proposals: {
+        Row: {
+          campo: string
+          contact_id: string
+          conversation_id: string | null
+          decided_at: string | null
+          decided_by_user_id: string | null
+          expires_at: string
+          id: string
+          message_id: string | null
+          motivo_recusa: string | null
+          organization_id: string
+          proposed_at: string
+          proposed_by_agent_id: string | null
+          status: string
+          trecho: string | null
+          updated_at: string
+          valor_anterior: string | null
+          valor_proposto: string
+        }
+        Insert: {
+          campo: string
+          contact_id: string
+          conversation_id?: string | null
+          decided_at?: string | null
+          decided_by_user_id?: string | null
+          expires_at: string
+          id?: string
+          message_id?: string | null
+          motivo_recusa?: string | null
+          organization_id: string
+          proposed_at?: string
+          proposed_by_agent_id?: string | null
+          status?: string
+          trecho?: string | null
+          updated_at?: string
+          valor_anterior?: string | null
+          valor_proposto: string
+        }
+        Update: {
+          campo?: string
+          contact_id?: string
+          conversation_id?: string | null
+          decided_at?: string | null
+          decided_by_user_id?: string | null
+          expires_at?: string
+          id?: string
+          message_id?: string | null
+          motivo_recusa?: string | null
+          organization_id?: string
+          proposed_at?: string
+          proposed_by_agent_id?: string | null
+          status?: string
+          trecho?: string | null
+          updated_at?: string
+          valor_anterior?: string | null
+          valor_proposto?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "contact_field_proposals_contact_id_fkey"
+            columns: ["contact_id"]
+            isOneToOne: false
+            referencedRelation: "contacts"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "contact_field_proposals_conversation_id_fkey"
+            columns: ["conversation_id"]
+            isOneToOne: false
+            referencedRelation: "conversations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "contact_field_proposals_message_id_fkey"
+            columns: ["message_id"]
+            isOneToOne: false
+            referencedRelation: "messages"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "contact_field_proposals_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "contact_field_proposals_proposed_by_agent_id_fkey"
+            columns: ["proposed_by_agent_id"]
+            isOneToOne: false
+            referencedRelation: "ai_agents"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       contacts: {
         Row: {
           anonymized_at: string | null
+          avatar_storage_path: string | null
+          avatar_updated_at: string | null
           birthdate: string | null
           blocked_at: string | null
           blocked_reason: string | null
@@ -1895,6 +2017,7 @@ export type Database = {
           is_blocked: boolean
           is_merged_into: string | null
           last_activity_at: string | null
+          locale: string | null
           merged_at: string | null
           name: string | null
           organization_id: string
@@ -1907,6 +2030,8 @@ export type Database = {
         }
         Insert: {
           anonymized_at?: string | null
+          avatar_storage_path?: string | null
+          avatar_updated_at?: string | null
           birthdate?: string | null
           blocked_at?: string | null
           blocked_reason?: string | null
@@ -1926,6 +2051,7 @@ export type Database = {
           is_blocked?: boolean
           is_merged_into?: string | null
           last_activity_at?: string | null
+          locale?: string | null
           merged_at?: string | null
           name?: string | null
           organization_id: string
@@ -1938,6 +2064,8 @@ export type Database = {
         }
         Update: {
           anonymized_at?: string | null
+          avatar_storage_path?: string | null
+          avatar_updated_at?: string | null
           birthdate?: string | null
           blocked_at?: string | null
           blocked_reason?: string | null
@@ -1957,6 +2085,7 @@ export type Database = {
           is_blocked?: boolean
           is_merged_into?: string | null
           last_activity_at?: string | null
+          locale?: string | null
           merged_at?: string | null
           name?: string | null
           organization_id?: string
@@ -2698,6 +2827,8 @@ export type Database = {
           is_archived: boolean
           is_lost: boolean
           is_won: boolean
+          last_change_actor_kind: string | null
+          last_change_at: string | null
           name: string
           organization_id: string
           pipeline_id: string
@@ -2718,6 +2849,8 @@ export type Database = {
           is_archived?: boolean
           is_lost?: boolean
           is_won?: boolean
+          last_change_actor_kind?: string | null
+          last_change_at?: string | null
           name: string
           organization_id: string
           pipeline_id: string
@@ -2738,6 +2871,8 @@ export type Database = {
           is_archived?: boolean
           is_lost?: boolean
           is_won?: boolean
+          last_change_actor_kind?: string | null
+          last_change_at?: string | null
           name?: string
           organization_id?: string
           pipeline_id?: string
@@ -2767,6 +2902,8 @@ export type Database = {
       cron_jobs: {
         Row: {
           attempts: number
+          cancel_reason: string | null
+          cancelled_at: string | null
           contact_id: string
           created_at: string
           cron_expr: string | null
@@ -2785,6 +2922,8 @@ export type Database = {
         }
         Insert: {
           attempts?: number
+          cancel_reason?: string | null
+          cancelled_at?: string | null
           contact_id: string
           created_at?: string
           cron_expr?: string | null
@@ -2803,6 +2942,8 @@ export type Database = {
         }
         Update: {
           attempts?: number
+          cancel_reason?: string | null
+          cancelled_at?: string | null
           contact_id?: string
           created_at?: string
           cron_expr?: string | null
@@ -2829,6 +2970,141 @@ export type Database = {
           },
           {
             foreignKeyName: "cron_jobs_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      demanda_conversas: {
+        Row: {
+          conversation_id: string
+          demanda_id: string
+          organization_id: string
+          vinculada_em: string
+        }
+        Insert: {
+          conversation_id: string
+          demanda_id: string
+          organization_id: string
+          vinculada_em?: string
+        }
+        Update: {
+          conversation_id?: string
+          demanda_id?: string
+          organization_id?: string
+          vinculada_em?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "demanda_conversas_conversation_id_fkey"
+            columns: ["conversation_id"]
+            isOneToOne: false
+            referencedRelation: "conversations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "demanda_conversas_demanda_id_fkey"
+            columns: ["demanda_id"]
+            isOneToOne: false
+            referencedRelation: "demandas"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "demanda_conversas_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      demandas: {
+        Row: {
+          aberta_em: string
+          agent_case_id: string | null
+          assunto: string | null
+          contact_id: string
+          created_at: string
+          desfecho: string | null
+          dono_kind: string
+          dono_user_id: string | null
+          estado: string
+          fechada_em: string | null
+          id: string
+          lead_id: string | null
+          organization_id: string
+          origem: string
+          prazo_em: string | null
+          proximo_passo: string | null
+          proximo_passo_em: string | null
+          updated_at: string
+        }
+        Insert: {
+          aberta_em?: string
+          agent_case_id?: string | null
+          assunto?: string | null
+          contact_id: string
+          created_at?: string
+          desfecho?: string | null
+          dono_kind?: string
+          dono_user_id?: string | null
+          estado?: string
+          fechada_em?: string | null
+          id?: string
+          lead_id?: string | null
+          organization_id: string
+          origem?: string
+          prazo_em?: string | null
+          proximo_passo?: string | null
+          proximo_passo_em?: string | null
+          updated_at?: string
+        }
+        Update: {
+          aberta_em?: string
+          agent_case_id?: string | null
+          assunto?: string | null
+          contact_id?: string
+          created_at?: string
+          desfecho?: string | null
+          dono_kind?: string
+          dono_user_id?: string | null
+          estado?: string
+          fechada_em?: string | null
+          id?: string
+          lead_id?: string | null
+          organization_id?: string
+          origem?: string
+          prazo_em?: string | null
+          proximo_passo?: string | null
+          proximo_passo_em?: string | null
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "demandas_agent_case_id_fkey"
+            columns: ["agent_case_id"]
+            isOneToOne: false
+            referencedRelation: "agent_cases"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "demandas_contact_id_fkey"
+            columns: ["contact_id"]
+            isOneToOne: false
+            referencedRelation: "contacts"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "demandas_lead_id_fkey"
+            columns: ["lead_id"]
+            isOneToOne: false
+            referencedRelation: "crm_leads"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "demandas_organization_id_fkey"
             columns: ["organization_id"]
             isOneToOne: false
             referencedRelation: "organizations"
@@ -3138,6 +3414,7 @@ export type Database = {
           started_at: string
           status: string
           steps_taken: number
+          timing_plan: Json | null
           updated_at: string
           version_id: string
         }
@@ -3160,6 +3437,7 @@ export type Database = {
           started_at?: string
           status?: string
           steps_taken?: number
+          timing_plan?: Json | null
           updated_at?: string
           version_id: string
         }
@@ -3182,6 +3460,7 @@ export type Database = {
           started_at?: string
           status?: string
           steps_taken?: number
+          timing_plan?: Json | null
           updated_at?: string
           version_id?: string
         }
@@ -5426,7 +5705,7 @@ export type Database = {
           created_at: string
           id: string
           used_at: string | null
-          used_ip: unknown
+          used_ip: unknown | null
           user_id: string
         }
         Insert: {
@@ -5434,7 +5713,7 @@ export type Database = {
           created_at?: string
           id?: string
           used_at?: string | null
-          used_ip?: unknown
+          used_ip?: unknown | null
           user_id: string
         }
         Update: {
@@ -5442,7 +5721,7 @@ export type Database = {
           created_at?: string
           id?: string
           used_at?: string | null
-          used_ip?: unknown
+          used_ip?: unknown | null
           user_id?: string
         }
         Relationships: []
@@ -5483,7 +5762,7 @@ export type Database = {
           payload_parsed: Json | null
           processed_at: string | null
           provider: string
-          raw_body: string
+          raw_body: string | null
           received_at: string
           signature_header: string | null
           status: string
@@ -5504,7 +5783,7 @@ export type Database = {
           payload_parsed?: Json | null
           processed_at?: string | null
           provider?: string
-          raw_body: string
+          raw_body?: string | null
           received_at?: string
           signature_header?: string | null
           status?: string
@@ -5525,7 +5804,7 @@ export type Database = {
           payload_parsed?: Json | null
           processed_at?: string | null
           provider?: string
-          raw_body?: string
+          raw_body?: string | null
           received_at?: string
           signature_header?: string | null
           status?: string
@@ -5552,6 +5831,8 @@ export type Database = {
           id: string
           is_active: boolean
           kind: string
+          last_change_actor_kind: string | null
+          last_change_at: string | null
           last_received_at: string | null
           name: string
           organization_id: string
@@ -5569,6 +5850,8 @@ export type Database = {
           id?: string
           is_active?: boolean
           kind?: string
+          last_change_actor_kind?: string | null
+          last_change_at?: string | null
           last_received_at?: string | null
           name: string
           organization_id: string
@@ -5586,6 +5869,8 @@ export type Database = {
           id?: string
           is_active?: boolean
           kind?: string
+          last_change_actor_kind?: string | null
+          last_change_at?: string | null
           last_received_at?: string | null
           name?: string
           organization_id?: string
@@ -5679,6 +5964,34 @@ export type Database = {
         Args: { p_agent_id: string; p_version_id: string }
         Returns: undefined
       }
+      binary_quantize: {
+        Args: { "": string } | { "": unknown }
+        Returns: unknown
+      }
+      citext: {
+        Args: { "": boolean } | { "": string } | { "": unknown }
+        Returns: string
+      }
+      citext_hash: {
+        Args: { "": string }
+        Returns: number
+      }
+      citextin: {
+        Args: { "": unknown }
+        Returns: string
+      }
+      citextout: {
+        Args: { "": string }
+        Returns: unknown
+      }
+      citextrecv: {
+        Args: { "": unknown }
+        Returns: string
+      }
+      citextsend: {
+        Args: { "": string }
+        Returns: string
+      }
       emit_event: {
         Args: {
           p_entity_id: string
@@ -5689,6 +6002,31 @@ export type Database = {
           p_payload?: Json
         }
         Returns: string
+      }
+      fn_agent_tool_usage: {
+        Args: { p_agent_id: string; p_organization_id: string; p_since: string }
+        Returns: {
+          ultima_vez: string
+          em_teste: number
+          falhas: number
+          total: number
+          tool_name: string
+        }[]
+      }
+      fn_atrito_jaccard: {
+        Args: { a: string; b: string }
+        Returns: number
+      }
+      fn_atrito_metrics: {
+        Args: {
+          p_abandono_horas?: number
+          p_espera_horas?: number
+          p_from: string
+          p_org: string
+          p_repeticao_min?: number
+          p_to: string
+        }
+        Returns: Json
       }
       fn_attendant_metrics: {
         Args: { p_from: string; p_org: string; p_owner?: string; p_to: string }
@@ -5726,12 +6064,6 @@ export type Database = {
           updated_at: string
           version_id: string
         }[]
-        SetofOptions: {
-          from: "*"
-          to: "followup_enrollments"
-          isOneToOne: false
-          isSetofReturn: true
-        }
       }
       fn_conversation_assign: {
         Args: {
@@ -5778,15 +6110,19 @@ export type Database = {
           usable_for_rag_marked_at: string | null
           usable_for_rag_marked_by: string | null
         }[]
-        SetofOptions: {
-          from: "*"
-          to: "conversations"
-          isOneToOne: false
-          isSetofReturn: true
-        }
       }
-      fn_decrypt_oauth: { Args: { ciphertext: string }; Returns: string }
-      fn_encrypt_oauth: { Args: { plaintext: string }; Returns: string }
+      fn_decrypt_oauth: {
+        Args: { ciphertext: string }
+        Returns: string
+      }
+      fn_encrypt_oauth: {
+        Args: { plaintext: string }
+        Returns: string
+      }
+      fn_gasto_de_ia_do_mes: {
+        Args: { p_org: string }
+        Returns: number
+      }
       fn_hard_reset_contact_context: {
         Args: {
           p_contact_id: string
@@ -5795,7 +6131,10 @@ export type Database = {
         }
         Returns: Json
       }
-      fn_is_platform_admin: { Args: never; Returns: boolean }
+      fn_is_platform_admin: {
+        Args: Record<PropertyKey, never>
+        Returns: boolean
+      }
       fn_lgpd_cascade_redact_contact: {
         Args: {
           p_contact_id: string
@@ -5828,10 +6167,10 @@ export type Database = {
       fn_publish_ai_agent_version: {
         Args: { p_agent_id: string; p_org_id: string; p_version_id: string }
         Returns: {
-          agent_id: string
+          version_id: string
           previous_version_id: string
           published_at: string
-          version_id: string
+          agent_id: string
         }[]
       }
       fn_publish_followup_flow_version: {
@@ -5862,10 +6201,94 @@ export type Database = {
         Args: { p_contact: string; p_org: string; p_session: string }
         Returns: string
       }
-      fn_user_org_ids: { Args: never; Returns: string[] }
-      fn_user_role_in: { Args: { p_org: string }; Returns: number }
-      fn_user_role_in_org: { Args: { p_org: string }; Returns: string }
-      midpoint: { Args: { p_next: number; p_prev: number }; Returns: number }
+      fn_user_org_ids: {
+        Args: Record<PropertyKey, never>
+        Returns: string[]
+      }
+      fn_user_role_in: {
+        Args: { p_org: string }
+        Returns: number
+      }
+      fn_user_role_in_org: {
+        Args: { p_org: string }
+        Returns: string
+      }
+      gtrgm_compress: {
+        Args: { "": unknown }
+        Returns: unknown
+      }
+      gtrgm_decompress: {
+        Args: { "": unknown }
+        Returns: unknown
+      }
+      gtrgm_in: {
+        Args: { "": unknown }
+        Returns: unknown
+      }
+      gtrgm_options: {
+        Args: { "": unknown }
+        Returns: undefined
+      }
+      gtrgm_out: {
+        Args: { "": unknown }
+        Returns: unknown
+      }
+      halfvec_avg: {
+        Args: { "": number[] }
+        Returns: unknown
+      }
+      halfvec_out: {
+        Args: { "": unknown }
+        Returns: unknown
+      }
+      halfvec_send: {
+        Args: { "": unknown }
+        Returns: string
+      }
+      halfvec_typmod_in: {
+        Args: { "": unknown[] }
+        Returns: number
+      }
+      hnsw_bit_support: {
+        Args: { "": unknown }
+        Returns: unknown
+      }
+      hnsw_halfvec_support: {
+        Args: { "": unknown }
+        Returns: unknown
+      }
+      hnsw_sparsevec_support: {
+        Args: { "": unknown }
+        Returns: unknown
+      }
+      hnswhandler: {
+        Args: { "": unknown }
+        Returns: unknown
+      }
+      ivfflat_bit_support: {
+        Args: { "": unknown }
+        Returns: unknown
+      }
+      ivfflat_halfvec_support: {
+        Args: { "": unknown }
+        Returns: unknown
+      }
+      ivfflathandler: {
+        Args: { "": unknown }
+        Returns: unknown
+      }
+      l2_norm: {
+        Args: { "": unknown } | { "": unknown }
+        Returns: number
+      }
+      l2_normalize: {
+        Args: { "": string } | { "": unknown } | { "": unknown }
+        Returns: string
+      }
+      midpoint: {
+        Args: { p_next: number; p_prev: number }
+        Returns: number
+      }
       retrieve_top_k_chunks: {
         Args: {
           p_embedding: string
@@ -5875,15 +6298,61 @@ export type Database = {
           p_threshold?: number
         }
         Returns: {
-          chunk_id: string
-          content: string
-          knowledge_source_id: string
           metadata: Json
+          chunk_id: string
+          knowledge_source_id: string
+          content: string
           similarity: number
         }[]
       }
-      show_limit: { Args: never; Returns: number }
-      show_trgm: { Args: { "": string }; Returns: string[] }
+      set_limit: {
+        Args: { "": number }
+        Returns: number
+      }
+      show_limit: {
+        Args: Record<PropertyKey, never>
+        Returns: number
+      }
+      show_trgm: {
+        Args: { "": string }
+        Returns: string[]
+      }
+      sparsevec_out: {
+        Args: { "": unknown }
+        Returns: unknown
+      }
+      sparsevec_send: {
+        Args: { "": unknown }
+        Returns: string
+      }
+      sparsevec_typmod_in: {
+        Args: { "": unknown[] }
+        Returns: number
+      }
+      vector_avg: {
+        Args: { "": number[] }
+        Returns: string
+      }
+      vector_dims: {
+        Args: { "": string } | { "": unknown }
+        Returns: number
+      }
+      vector_norm: {
+        Args: { "": string }
+        Returns: number
+      }
+      vector_out: {
+        Args: { "": string }
+        Returns: unknown
+      }
+      vector_send: {
+        Args: { "": string }
+        Returns: string
+      }
+      vector_typmod_in: {
+        Args: { "": unknown[] }
+        Returns: number
+      }
     }
     Enums: {
       [_ in never]: never
@@ -5986,6 +6455,101 @@ export type Database = {
           updated_at?: string
         }
         Relationships: []
+      }
+      iceberg_namespaces: {
+        Row: {
+          bucket_name: string
+          catalog_id: string
+          created_at: string
+          id: string
+          metadata: Json
+          name: string
+          updated_at: string
+        }
+        Insert: {
+          bucket_name: string
+          catalog_id: string
+          created_at?: string
+          id?: string
+          metadata?: Json
+          name: string
+          updated_at?: string
+        }
+        Update: {
+          bucket_name?: string
+          catalog_id?: string
+          created_at?: string
+          id?: string
+          metadata?: Json
+          name?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "iceberg_namespaces_catalog_id_fkey"
+            columns: ["catalog_id"]
+            isOneToOne: false
+            referencedRelation: "buckets_analytics"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      iceberg_tables: {
+        Row: {
+          bucket_name: string
+          catalog_id: string
+          created_at: string
+          id: string
+          location: string
+          name: string
+          namespace_id: string
+          remote_table_id: string | null
+          shard_id: string | null
+          shard_key: string | null
+          updated_at: string
+        }
+        Insert: {
+          bucket_name: string
+          catalog_id: string
+          created_at?: string
+          id?: string
+          location: string
+          name: string
+          namespace_id: string
+          remote_table_id?: string | null
+          shard_id?: string | null
+          shard_key?: string | null
+          updated_at?: string
+        }
+        Update: {
+          bucket_name?: string
+          catalog_id?: string
+          created_at?: string
+          id?: string
+          location?: string
+          name?: string
+          namespace_id?: string
+          remote_table_id?: string | null
+          shard_id?: string | null
+          shard_key?: string | null
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "iceberg_tables_catalog_id_fkey"
+            columns: ["catalog_id"]
+            isOneToOne: false
+            referencedRelation: "buckets_analytics"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "iceberg_tables_namespace_id_fkey"
+            columns: ["namespace_id"]
+            isOneToOne: false
+            referencedRelation: "iceberg_namespaces"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       migrations: {
         Row: {
@@ -6223,15 +6787,24 @@ export type Database = {
         Args: { bucketid: string; metadata: Json; name: string; owner: string }
         Returns: undefined
       }
-      extension: { Args: { name: string }; Returns: string }
-      filename: { Args: { name: string }; Returns: string }
-      foldername: { Args: { name: string }; Returns: string[] }
+      extension: {
+        Args: { name: string }
+        Returns: string
+      }
+      filename: {
+        Args: { name: string }
+        Returns: string
+      }
+      foldername: {
+        Args: { name: string }
+        Returns: string[]
+      }
       get_common_prefix: {
         Args: { p_delimiter: string; p_key: string; p_prefix: string }
         Returns: string
       }
       get_size_by_bucket: {
-        Args: never
+        Args: Record<PropertyKey, never>
         Returns: {
           bucket_id: string
           size: number
@@ -6247,9 +6820,9 @@ export type Database = {
           prefix_param: string
         }
         Returns: {
-          created_at: string
           id: string
           key: string
+          created_at: string
         }[]
       }
       list_objects_with_delimiter: {
@@ -6263,15 +6836,18 @@ export type Database = {
           start_after?: string
         }
         Returns: {
-          created_at: string
-          id: string
-          last_accessed_at: string
-          metadata: Json
           name: string
+          id: string
+          metadata: Json
           updated_at: string
+          created_at: string
+          last_accessed_at: string
         }[]
       }
-      operation: { Args: never; Returns: string }
+      operation: {
+        Args: Record<PropertyKey, never>
+        Returns: string
+      }
       search: {
         Args: {
           bucketname: string
@@ -6285,11 +6861,11 @@ export type Database = {
         }
         Returns: {
           created_at: string
-          id: string
           last_accessed_at: string
           metadata: Json
-          name: string
           updated_at: string
+          id: string
+          name: string
         }[]
       }
       search_by_timestamp: {
@@ -6305,12 +6881,12 @@ export type Database = {
         }
         Returns: {
           created_at: string
-          id: string
-          key: string
-          last_accessed_at: string
-          metadata: Json
-          name: string
           updated_at: string
+          id: string
+          name: string
+          key: string
+          metadata: Json
+          last_accessed_at: string
         }[]
       }
       search_v2: {
@@ -6325,13 +6901,13 @@ export type Database = {
           start_after?: string
         }
         Returns: {
-          created_at: string
-          id: string
+          updated_at: string
           key: string
+          name: string
+          id: string
+          created_at: string
           last_accessed_at: string
           metadata: Json
-          name: string
-          updated_at: string
         }[]
       }
     }

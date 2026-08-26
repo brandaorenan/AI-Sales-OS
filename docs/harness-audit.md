@@ -5,10 +5,35 @@ status: draft
 last_updated: 2026-07-29
 generated_by: auditoria documental (Claude Code) — verificação de arquivos, CI e configs
 confidence: alta (todos os itens verificados por leitura direta de arquivo/config; nenhum comando executado)
-audited_against: origin/main @ 789dfa6 (v1.0.0, 2026-07-27)
+audited_against: origin/main @ 789dfa6 (v1.0.0, 2026-07-29)
 ---
 
 # Auditoria do harness — DeskcommCRM
+
+> # ⚠️ ESTE DOCUMENTO É UM RETRATO, NÃO O ESTADO DE HOJE
+>
+> **Ele descreve `origin/main` no commit `789dfa6` (v1.0.0, 2026-07-29).** Os números,
+> contagens e vereditos abaixo conferem **contra aquele commit** — não contra o que está na
+> `main` agora. Entre um e outro há **1.014 commits e 71 migrations** (medido em 2026-08-14).
+>
+> **Nada aqui é mantido.** É deliberado, e é a alternativa honesta: um retrato datado nunca
+> mente, enquanto um documento atualizado uma vez volta a mentir na semana seguinte — e sem
+> aviso, porque a atualização recente faz o leitor confiar mais.
+>
+> **Antes de agir sobre qualquer linha, remeça.** Uma auditoria de 2026-08-14 encontrou
+> 20 afirmações desatualizadas só neste arquivo — várias dizendo que falta algo que já foi
+> feito. Os comandos de medição de cada uma estão em
+> [`audits/2026-08-14-afirmacoes-de-estado.md`](audits/2026-08-14-afirmacoes-de-estado.md).
+>
+> Precisa do estado de agora? Meça na fonte. Para o que este documento mais cita:
+>
+> ```bash
+> gh api repos/melgarafael/DeskcommCRM/branches/main/protection \
+>   --jq '.required_status_checks.contexts'      # os checks obrigatórios
+> pnpm typecheck && pnpm lint && pnpm lint:channels && pnpm test:unit && pnpm test:shell
+> ```
+
+
 
 "Harness" = a infraestrutura que permite a um humano ou agente instalar, entender,
 alterar e **verificar** o projeto com segurança. Um harness fraco não impede o trabalho;
@@ -28,7 +53,7 @@ verificados por leitura de arquivo, config e workflow.
 | H2 — Reproduzível | ✅ | Quickstart no README, `docs/SETUP.md`, `.nvmrc` (22), `packageManager` fixo, `pnpm-lock.yaml`, `docker-compose.yml`, `install.sh` do kit self-host, `baseline.sql` |
 | H3 — Verificável | ✅ | `lint` + `typecheck` + `test:unit` + `build`; CI roda os 3 primeiros em PR |
 | H4 — Preparado para agentes | ✅ | `CLAUDE.md` doutrinal forte; `AGENTS.md` **criado nesta auditoria**; documentação técnica extensa; **e o CI roda o gate de isolamento RLS** (job `invariants` → `pnpm test:db`) |
-| H5 — Automação avançada | ⚠️ **parcial** | CI confiável e ambiente isolado ✅ (Postgres efêmero pg17, worktrees, gov-loop com maker≠checker e hash-check). Faltam: **16 das 19 specs E2E fora do CI** (3 rodam via `e2e.yml` desde 2026-07-30, não-obrigatório), `format:check` fora do CI, e o comando único local (`gov:verify`) não cobre `test:db`/`test:e2e` |
+| H5 — Automação avançada | ⚠️ **parcial** | CI confiável e ambiente isolado ✅ (Postgres efêmero pg17, worktrees, gov-loop com maker≠checker e hash-check). Falta: **1 das 46 specs E2E fora do CI** (45 rodam via `e2e.yml`, **obrigatório desde 2026-08-08**; a de fora é `vps-fresh-onboarding`, que é justamente a P0), `format:check` fora do CI, e o comando único local (`gov:verify`) não cobre `test:db`/`test:e2e`. *(Números recontados em 2026-08-14 @ `741c4ec8`; a redação anterior — "4 das 32, não-obrigatório" — apodreceu.)* |
 
 **Por que H4 e não H5:** a instrução da auditoria é explícita — não atribuir nível só
 porque os arquivos existem, avaliar se o processo está implementado. Aqui está: o gate de
@@ -68,7 +93,7 @@ Legenda: ✅ existente e funcional · ⚠️ existente mas incompleto · ❌ nã
 | 10 | Checagem de tipos | ✅ | `pnpm typecheck` (`tsc --noEmit`, TS 6 estrito), roda no CI |
 | 11 | Testes unitários | ✅ | 221 arquivos `*.test.ts(x)`; `pnpm test:unit` no CI |
 | 12 | Testes de integração | ✅ | **56 arquivos** de invariantes em `tests/invariants/` + `tests/api/`. Excluídos do `test:unit` de propósito (`vitest.config.ts:12`) e rodados pelo job `invariants` do CI via `pnpm test:db` |
-| 13 | Testes E2E | ⚠️ | 19 specs Playwright. **3 rodam no CI** (`e2e.yml`, não-obrigatório); os P0 `vps-fresh-onboarding` e `vps-webhook-outbound-ssrf` ainda não |
+| 13 | Testes E2E | ⚠️ | 20 specs Playwright. **10 rodam no CI** (`e2e.yml`, ainda não-obrigatório), incluindo o P0 `vps-webhook-outbound-ssrf`; o P0 `vps-fresh-onboarding` continua fora (issue #63) |
 | 14 | Comando único de verificação | ⚠️ | `pnpm gov:verify` = `typecheck && lint && test:unit`. **Omite `test:db` e `test:e2e`** — verde localmente não significa verificado. O CI cobre `test:db`, mas só depois do push |
 | 15 | CI executando verificações | ✅ | `ci.yml` tem 2 jobs: `verify` (typecheck + lint + test:unit) e **`invariants` (`pnpm test:db` — isolamento RLS + invariantes de governança, em job paralelo com timeout de 20min)**. Falta E2E e `format:check`. `perf.yml` faz build + bundle size; `publish-image.yml` publica no GHCR |
 | 16 | Proteção contra secrets | ⚠️ | `.gitignore` cobre `.env*` (exceção só para os `.example`) e o Sentry tem `beforeSend` que higieniza PII. **Sem** gitleaks/trufflehog no CI, **sem** pre-commit hook |

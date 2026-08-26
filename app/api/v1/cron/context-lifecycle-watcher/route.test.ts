@@ -219,7 +219,10 @@ describe("context-lifecycle-watcher", () => {
     expect(state.contacts.get("contact-b")).toBeNull();
     expect(state.contacts.get("contact-c")).toBeNull();
     expect(emitLeadActivityMock).toHaveBeenCalledTimes(2);
-    expect(auditMock).toHaveBeenCalledTimes(2);
+    // Uma auditoria por RODADA (resumo em lote, mesmo padrão de
+    // snooze-watcher/data-retention) — não uma por contato marcado. O detalhe
+    // por contato já vive em lead_activities via emitLeadActivity, acima.
+    expect(auditMock).toHaveBeenCalledTimes(1);
 
     // A segunda batida encontra as marcas feitas pela primeira e não cria
     // uma segunda atividade/auditoria.
@@ -231,7 +234,7 @@ describe("context-lifecycle-watcher", () => {
       jobs_canceled: 0,
     });
     expect(emitLeadActivityMock).toHaveBeenCalledTimes(2);
-    expect(auditMock).toHaveBeenCalledTimes(2);
+    expect(auditMock).toHaveBeenCalledTimes(1);
   });
 
   it("pagina além do limite de 1000 linhas do PostgREST em vez de travar na primeira página", async () => {
