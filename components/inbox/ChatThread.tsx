@@ -20,6 +20,8 @@ interface Props {
   /** Spec 16 §9.4 — marca de corte do contato (null = sem divisor). */
   contextResetAt?: string | null;
   contextResetReason?: string | null;
+  /** Escolher uma mensagem para responder. Sobe até o composer. */
+  onResponder?: (m: Message) => void;
 }
 
 /** Onda 5.2: union de item do thread — mensagem real ou nota interna (nunca vai ao cliente). */
@@ -68,6 +70,7 @@ export function ChatThread({
   conversationId,
   contextResetAt = null,
   contextResetReason = null,
+  onResponder,
 }: Props) {
   const q = useMessagesRealtime(conversationId);
   const notes = useConversationNotes(conversationId);
@@ -84,6 +87,16 @@ export function ChatThread({
     () => q.data?.pages.flatMap((p) => p.data) ?? [],
     [q.data],
   );
+
+  /**
+   * As mensagens por id, para resolver a CITADA sem ir ao servidor.
+   *
+   * Uma consulta por bolha citada seria uma cascata de requisições numa
+   * conversa longa. Aqui o fio sai da lista que já está na tela — e quando a
+   * citada ficou fora da página carregada, ele simplesmente não aparece, que é
+   * melhor que segurar a conversa esperando por um texto de enfeite.
+   */
+  const porId = useMemo(() => new Map(messages.map((m) => [m.id, m])), [messages]);
 
   const items: ThreadItem[] = useMemo(
     () => mergeThreadItems(messages, notes),
@@ -217,6 +230,8 @@ export function ChatThread({
                   {item.kind === "note" ? (
                     <NoteCard
                       note={item.data}
+                      // Só o autor ou manager+ vê o excluir — o backend barra o resto (403),
+                      // então não mostramos um botão que daria erro.
                       onDelete={
                         item.data.created_by_user_id === currentUser.id || canManage
                           ? () => deleteNote.mutate(item.data.id)
@@ -227,6 +242,12 @@ export function ChatThread({
                     <MessageBubble
                       message={item.data}
                       debugCitations={debugCitations}
+                      onResponder={onResponder}
+                      // A citada sai da MESMA lista já carregada: buscar no servidor
+                      // por cada citação faria uma consulta por bolha. Quando a
+                      // citada é antiga demais e ficou fora da página, o fio some —
+                      // que é melhor que segurar a conversa esperando.
+                      citada={porId.get(item.data.reply_to_message_id ?? "") ?? null}
                     />
                   )}
                   {showDividerAfter && (

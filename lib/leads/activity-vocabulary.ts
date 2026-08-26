@@ -40,7 +40,40 @@ export type ActivityType =
   | "reactivation_expired"
   | "followup_scheduled"
   | "followup_cancelled"
+  /**
+   * As quatro formas de INTERVIR num follow-up em andamento, sem matá-lo.
+   * Antes delas, a única saída era cancelar — e quem lesse a timeline via o
+   * fluxo sumir sem saber se alguém desistiu ou se ele terminou.
+   */
+  | "followup_paused"
+  | "followup_resumed"
+  | "followup_snoozed"
+  | "followup_step_skipped"
   | "demand_closed"
+  | "promise_unowned"
+  /**
+   * O respondente disse NÃO no formulário de captação (ex.: Respondi). A
+   * recusa é sinal, não ausência de sinal — sem linha na timeline, "por que
+   * ninguém mandou WhatsApp pra este lead" fica sem resposta visível, e é
+   * justamente esse silêncio que a automação de 1º toque precisa respeitar.
+   */
+  | "consent_declined"
+  /**
+   * A TROCA DE COMANDO ENTRE PESSOAS. A ida e a volta IA↔humano já estavam aqui
+   * (`handoff_triggered`/`handoff_resolved`); assumir, transferir e liberar não
+   * geravam linha nenhuma — grep nas três rotas devolvia zero. O efeito era uma
+   * timeline em que o cliente saía do automático, alguém resolvia, e a conversa
+   * reaparecia com outro dono sem nada explicando a passagem.
+   *
+   * Não vieram como tabela nova de propósito: a auditoria de atribuição
+   * (`conversation_assignment_events`) existe, é append-only e serve ao
+   * roteamento — mas uma SEGUNDA linha do tempo ao lado desta, no mesmo painel,
+   * seria dois lugares contando a mesma história.
+   */
+  | "conversation_claimed"
+  | "conversation_transferred"
+  | "conversation_released"
+  | "conversation_ai_paused"
   // Spec 16 (ciclo de vida do contexto) — os três eventos de corte que
   // aparecem no divisor da thread e na timeline do contato.
   | "context_reset_manual"
@@ -89,11 +122,40 @@ export const ACTIVITY_LABELS: Record<ActivityType, string> = {
   // retomar, para não repropor o que uma pessoa já desmarcou.
   followup_scheduled: "Retorno agendado",
   followup_cancelled: "Retorno cancelado",
+  // PAUSAR NÃO É CANCELAR, e a diferença importa para quem pega o atendimento
+  // depois: cancelado é decisão fechada, pausado é o fluxo parado esperando uma
+  // pessoa. Sem as duas linhas, quem lê a timeline não sabe se o silêncio do
+  // agente é desistência ou espera — e, no caso do adiamento, nem que existe
+  // uma data combinada.
+  followup_paused: "Follow-up pausado",
+  followup_resumed: "Follow-up retomado",
+  followup_snoozed: "Follow-up adiado",
+  followup_step_skipped: "Passo do follow-up pulado",
+  // PROMESSA SEM RESPONSÁVEL. Entra na timeline pelo mesmo critério do
+  // `diffCheckpoint`: só o que muda o que alguém faria a seguir. Turno em que o
+  // Operador AGIU não gera linha própria — as ferramentas dele já geram as delas
+  // (`stage_changed`, `followup_scheduled`), e uma segunda linha dizendo "o
+  // Operador trabalhou" é o ruído que o diff existe para matar.
+  //
+  // O rótulo não diz "não cumprida": o sistema não apura cumprimento, apura se
+  // alguém assumiu.
+  promise_unowned: "Promessa sem responsável",
   // ENCERRAR É O OUTRO LADO do invariante 4: uma demanda aberta precisa de
   // próximo passo OU de desfecho registrado. Fechar como ganho ou perdido era
   // invisível na timeline — só existia em audit e event_log, que ninguém lê na
   // tela — e o dossiê de um negócio fechado terminava sem dizer que fechou.
   demand_closed: "Demanda encerrada",
+  consent_declined: "Consentimento de contato recusado no formulário",
+  // Rótulos com OBJETO, nunca verbo nu: "Liberou" sozinho não diz o quê, e numa
+  // clínica "liberar" é o que se faz com um exame. O resto do arquivo já segue
+  // essa régua ("Retorno agendado", "Demanda encerrada").
+  conversation_claimed: "Assumiu a conversa",
+  conversation_transferred: "Transferiu a conversa",
+  conversation_released: "Liberou a conversa",
+  // "automático" e não "IA": a palavra do estado já é contrato em quatro
+  // arquivos e o controle NEGATIVO de `handoff-por-orcamento.test.ts` usa
+  // literalmente "Voltar para a IA" como a sabotagem que deve reprovar.
+  conversation_ai_paused: "Pausou o automático",
   // O divisor da thread (Spec 16 §9.4) reusa este rótulo — é por isso que o
   // texto já nasce na terceira pessoa e sem jargão técnico ("corte"/"cutoff").
   context_reset_manual: "Contexto apagado manualmente",

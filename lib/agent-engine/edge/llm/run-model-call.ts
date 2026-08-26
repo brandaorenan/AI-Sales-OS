@@ -23,7 +23,18 @@ import { scrubMessage } from '@/lib/sentry/scrub';
 
 import type { Logger } from '../../obs/logger';
 import { decidirParaOSeam } from './binding-do-ponto';
-import { resolveOrgLlmConfig, type LlmEdgeConfig } from './credentials';
+import { resolveOrgLlmConfig, type LlmEdgeConfig, type OrcamentoDaOrg } from './credentials';
+import {
+  AVISO_CORPO,
+  AVISO_TITULO,
+  BLOQUEIO_TITULO,
+  corpoDoBloqueio,
+  decidirOrcamento,
+  normalizarModoDeOrcamento,
+  LIMIAR_PADRAO_PCT,
+  SQL_ORCAMENTO,
+  type ChaveDeOrcamento,
+} from './orcamento';
 import { costCents, type TokenUsage } from './pricing';
 import { createDefaultRegistry, type ProviderRegistry } from './providers';
 import { esforcoParaChamada } from './reasoning-effort';
@@ -40,8 +51,19 @@ export { llmEdgeConfigFromEnv, LlmNotConfiguredError } from './credentials';
 /** Teto mensal da org esgotado — runs recusados ANTES do provider (zero tokens). */
 export class LlmBudgetExceededError extends Error {
   override readonly name = 'llm_budget_exceeded';
+  /**
+   * Veto PERMANENTE de negócio, não incidente de sistema — tentar de novo daqui
+   * a um minuto dá o mesmo resultado, porque o gasto não diminui sozinho.
+   *
+   * Quem lê isto é a fila (`workers/agent-worker/main.ts`), para mandar o job
+   * ao `cancelJob` em vez do `failJob`: sem isso, um bloqueio produz N conversas
+   * × `max_attempts` tentativas e N alertas CRÍTICOS `job_dead` sem dedup,
+   * afogando o único `budget_exceeded` — que é o alerta que explica. O
+   * REPONTAMENTO da fila é da onda seguinte; o rótulo entra aqui, com o erro.
+   */
+  readonly terminal = true;
   constructor() {
-    super('orçamento mensal de LLM da org esgotado — chamada recusada; ajuste o teto ou aguarde a virada do mês (agent_inbox_items kind=budget_exceeded)');
+    super('orçamento mensal de IA da organização atingido — chamada recusada antes de sair byte para o provedor; ajuste o teto em Uso de IA › Orçamento, desligue a proteção, ou aguarde a virada do mês (agent_inbox_items kind=budget_exceeded)');
   }
 }
 
@@ -111,11 +133,12 @@ export interface RunModelCallDeps {
  * MESMO turno ainda em voo — fecha a janela entre "checou orçamento" e "gravou custo em
  * llm_calls" quando 2+ chamadas do MESMO turno rodam em paralelo (stage-classifier +
  * jailbreak-classifier, Promise.allSettled em runAgentTurn F3-11/F4-04). Sem isso, as
- * duas leem o mesmo `spent` do DB antes de qualquer uma terminar e passam mesmo que,
- * juntas, estourem o teto. Escopo por jobId: não atropela turnos concorrentes de OUTROS
- * leads/jobs da mesma org — cada um segue gated só pelo `spent` real no DB, como antes
- * (o cross-processo/cross-job permanece best-effort, doutrina já aceita — ver
- * assertBudget). Liberada (o custo real já foi gravado em llm_calls) assim que a
+ * duas leem o MESMO `gasto` (a SQL_ORCAMENTO relê o banco, mas nenhuma das duas
+ * chamadas em voo ainda gravou custo nele) e passam mesmo que, juntas, estourem o
+ * teto. Escopo por jobId: não atropela turnos concorrentes de OUTROS leads/jobs da
+ * mesma org — cada um segue gated só pelo `gasto` real no DB, como antes (o
+ * cross-processo/cross-job permanece best-effort, doutrina já aceita — ver
+ * aplicarOrcamento). Liberada (o custo real já foi gravado em llm_calls) assim que a
  * chamada termina, sucesso ou erro.
  */
 const inFlightCentsByJob = new Map<string, number>();
@@ -161,53 +184,198 @@ function estimateReserveCents(model: string, system: string | undefined, message
   return costCents(model, usage) ?? 0;
 }
 
+/** Reserva `estimateCents` em voo pro jobId, se os dois existirem. Devolve o quanto reservou. */
+function reservarEmVoo(jobId: string | null | undefined, estimateCents: number): number {
+  if (jobId == null || estimateCents <= 0) {
+    return 0;
+  }
+  const atual = inFlightCentsByJob.get(jobId) ?? 0;
+  inFlightCentsByJob.set(jobId, atual + estimateCents);
+  return estimateCents;
+}
+
 /**
- * Budget é enforcement do harness: agregado mensal de llm_calls × teto da org
- * (organizations.settings.llm.monthly_budget_cents), checado antes de QUALQUER
- * byte ao provider. Estouro → agent_inbox_items (1 por episódio: enquanto houver
- * item 'budget_exceeded' aberto, recusas novas não duplicam o alerta) + erro
- * tipado. ponytail: o insert-if-not-exists é um único statement; duas recusas
- * exatamente simultâneas podem duplicar o alerta — inócuo.
+ * Texto do aviso de limiar. É PONTEIRO, não retrato: manda ver os números na
+ * tela em vez de congelar um "80%" que envelhece no mesmo minuto em que o gasto
+ * sobe. O statement do gate insere este item de dentro do banco, junto com a
+ * leitura, e por isso os números do momento ainda não existem em JS quando o
+ * texto é montado — a escolha do ponteiro transforma essa limitação em acerto.
  *
- * Retorna os cents efetivamente reservados em inFlightCentsByJob (0 se não reservou —
- * sem teto configurado, sem jobId, ou modelo sem preço) pra o caller liberar depois.
+ * A cópia mora em `./orcamento` porque o caminho legado
+ * (`workers/ai-response-worker.ts`) abre os MESMOS dois itens e não pode
+ * importar este arquivo (ele arrastaria `pg` e o SDK para o bundle do Next).
  */
-async function assertBudget(
-  db: pg.Pool,
-  organizationId: string,
-  budgetCents: number | null,
-  reserve: { jobId: string | null | undefined; estimateCents: number },
-): Promise<number> {
-  if (budgetCents === null) {
+
+/** O que o statement do gate devolve — uma ida ao banco, um snapshot. */
+interface LinhaDoOrcamento {
+  teto: number | string | null;
+  modo: string | null;
+  efetivo_em: Date | null;
+  limiar_pct: number | string | null;
+  /** `numeric` do Postgres chega como STRING no node-pg. Sempre coagir. */
+  gasto: string | number | null;
+  avisado_antes: boolean | null;
+}
+
+/**
+ * O GATE — lê o estado, deixa `decidirOrcamento` decidir, e executa o veredito.
+ *
+ * ═══ POR QUE ELE NÃO DECIDE NADA POR CONTA PRÓPRIA ═══
+ *
+ * A regra inteira mora em `./orcamento.ts`, pura e testável sem banco. Aqui só
+ * há I/O: uma query, um insert quando bloqueia, um log. As duas condições
+ * repetidas abaixo (`modo === 'off'` e `chave === 'off'`) NÃO são uma segunda
+ * cópia da regra — são um atalho de CUSTO, e o que as autoriza é que a função
+ * pura devolve `seguir` para as duas sob qualquer outro valor de entrada. Essa
+ * concordância é cobrada por teste; se alguém mudar a função e não o atalho, o
+ * teste vermelhece antes do cliente.
+ *
+ * ═══ O CUSTO NO CAMINHO QUENTE ═══
+ *
+ * Com `enforcement_mode = 'off'` — 100% das organizações no dia do upgrade,
+ * porque a coluna nasce assim por DEFAULT — o gate volta ANTES de qualquer
+ * query. É estritamente menos trabalho que o `assertBudget` de antes, que ia ao
+ * banco somar `llm_calls` sempre que o jsonb tivesse um número.
+ *
+ * ═══ FALHA ABERTA NA AÇÃO, ABERTA NA INFORMAÇÃO ═══
+ *
+ * Erro na leitura do orçamento NUNCA bloqueia: o cliente não pode perder o
+ * agente porque uma query falhou. Mas a causa vai para o log, nomeada — a frase
+ * tranquilizadora sozinha é o que faz um defeito viver meses.
+ *
+ * ═══ A JANELA ENTRE CHAMADAS DO MESMO TURNO ═══
+ *
+ * `linha.gasto` é o snapshot do banco — não vê o custo ESTIMADO de outra
+ * chamada do MESMO jobId que já passou por aqui e ainda não terminou (stage- e
+ * jailbreak-classifier rodam em paralelo via Promise.allSettled). Somar
+ * `inFlightCentsByJob.get(jobId)` ao gasto antes de `decidirOrcamento` fecha
+ * essa janela sem tocar a função pura nem a SQL — é informação que só existe
+ * EM PROCESSO, porque nenhuma das duas chamadas em voo gravou linha em
+ * `llm_calls` ainda. Devolve os cents reservados (0 se não reservou) pro
+ * caller liberar em `finally`.
+ */
+async function aplicarOrcamento(d: {
+  db: pg.Pool;
+  organizationId: string;
+  /** Só para o atalho de custo. A decisão usa o snapshot de `SQL_ORCAMENTO`. */
+  orcamentoDaConfig: OrcamentoDaOrg;
+  orcamentoIndisponivelPorque: string | null;
+  chave: ChaveDeOrcamento;
+  purpose: string;
+  provider: string;
+  model: string;
+  origem: string;
+  input: RunModelCallInput;
+  /** jobId + custo estimado desta chamada, pra reserva em voo (ver `inFlightCentsByJob`). */
+  jobId: string | null | undefined;
+  estimateCents: number;
+  log?: Logger;
+}): Promise<number> {
+  const comum = { organization_id: d.organizationId, purpose: d.purpose };
+
+  if (d.orcamentoIndisponivelPorque !== null) {
+    d.log?.warn('llm: orçamento não pôde ser lido — a chamada SEGUE sem teto', {
+      ...comum,
+      causa: d.orcamentoIndisponivelPorque,
+    });
     return 0;
   }
-  const { rows } = await db.query<{ spent: number }>(
-    `select coalesce(sum(cost_cents), 0)::float8 as spent
-     from llm_calls
-     where organization_id = $1 and created_at >= date_trunc('month', now())`,
-    [organizationId],
-  );
-  const spent = rows[0]?.spent ?? 0;
-  const inFlight = reserve.jobId != null ? inFlightCentsByJob.get(reserve.jobId) ?? 0 : 0;
-  if (spent + inFlight < budgetCents) {
-    if (reserve.jobId != null && reserve.estimateCents > 0) {
-      inFlightCentsByJob.set(reserve.jobId, inFlight + reserve.estimateCents);
-      return reserve.estimateCents;
-    }
+  if (d.orcamentoDaConfig.modo === 'off' || d.chave === 'off') {
     return 0;
   }
-  await db.query(
-    `insert into agent_inbox_items (organization_id, kind, severity, title, body)
-     select $1, 'budget_exceeded', 'critical',
-            'Orçamento mensal de LLM esgotado — agente pausado para esta org',
-            'gasto do mês atingiu o teto configurado em organizations.settings.llm.monthly_budget_cents; aumente o teto ou aguarde a virada do mês'
+
+  const inicio = Date.now();
+  let linha: LinhaDoOrcamento | undefined;
+  try {
+    const { rows } = await d.db.query<LinhaDoOrcamento>(SQL_ORCAMENTO, [
+      d.organizationId,
+      AVISO_TITULO,
+      AVISO_CORPO,
+    ]);
+    linha = rows[0];
+  } catch (err) {
+    d.log?.warn('llm: consulta de orçamento falhou — a chamada SEGUE sem teto', {
+      ...comum,
+      ...normalizarErro(err),
+    });
+    return 0;
+  }
+  if (linha === undefined) {
+    // `select` de CTEs escalares sempre devolve uma linha; zero linhas aqui é
+    // um mundo que não deveria existir, e nele a resposta segue sendo a frouxa.
+    d.log?.warn('llm: consulta de orçamento não devolveu linha — a chamada SEGUE', comum);
+    return 0;
+  }
+
+  const emVoo = d.jobId != null ? inFlightCentsByJob.get(d.jobId) ?? 0 : 0;
+  const gastoCents = Number(linha.gasto ?? 0) + emVoo;
+  const tetoCents = Number(linha.teto ?? 0);
+  const veredito = decidirOrcamento({
+    modo: normalizarModoDeOrcamento(linha.modo),
+    tetoCents,
+    gastoCents,
+    efetivoEm: linha.efetivo_em ?? null,
+    agora: new Date(),
+    purpose: d.purpose,
+    chave: d.chave,
+    limiarPct: Number(linha.limiar_pct ?? LIMIAR_PADRAO_PCT),
+    avisadoNesteMes: linha.avisado_antes === true,
+  });
+
+  if (veredito.acao === 'seguir') {
+    return reservarEmVoo(d.jobId, d.estimateCents);
+  }
+  if (veredito.acao === 'avisar_e_seguir') {
+    // O item da Central já foi aberto pelo próprio statement (CTE `avisa`), no
+    // mesmo snapshot que decidiu — aqui só sobra o log.
+    d.log?.warn('llm: gasto de IA passou do aviso — a chamada SEGUE', {
+      ...comum,
+      porque: veredito.porque,
+      gasto_cents: gastoCents,
+      teto_cents: tetoCents,
+    });
+    return reservarEmVoo(d.jobId, d.estimateCents);
+  }
+
+  const erro = new LlmBudgetExceededError();
+  // `ref_kind`/`ref_id` existem para que ALGUÉM possa fechar este item: o
+  // insert anterior não gravava ref nenhum, e por isso nenhum auto-resolvedor
+  // o alcançava — virava o mês, a IA voltava, e o alerta crítico continuava
+  // aceso. Estado falso é pior que ausente, porque quem lê age sobre ele.
+  await d.db.query(
+    `insert into agent_inbox_items (organization_id, kind, severity, title, body, ref_kind, ref_id)
+     select $1, 'budget_exceeded', 'critical', $2, $3, 'ai_budget', $1
      where not exists (
        select 1 from agent_inbox_items
        where organization_id = $1 and kind = 'budget_exceeded' and status = 'open'
      )`,
-    [organizationId],
+    [d.organizationId, BLOQUEIO_TITULO, corpoDoBloqueio(gastoCents, tetoCents)],
   );
-  throw new LlmBudgetExceededError();
+  // A recusa vira LINHA em llm_calls. A tela /app/ai/runs nasceu porque
+  // "llm_calls só registrava sucesso — a tabela ficava vazia exatamente no caso
+  // que precisava de explicação", e o único caso em que o agente para DE
+  // PROPÓSITO era justamente o que continuava invisível: o `throw` de antes
+  // caía fora do `try` que grava a falha. É o irmão que não foi replantado
+  // quando a 0128 consertou a classe.
+  await registrarFalha(d.db, {
+    input: d.input,
+    purpose: d.purpose,
+    provider: d.provider,
+    model: d.model,
+    origem: d.origem,
+    latencyMs: Date.now() - inicio,
+    erro,
+  }).catch(() => {
+    // Gravar a recusa não pode impedir a recusa.
+  });
+  d.log?.warn('llm: chamada recusada por orçamento', {
+    ...comum,
+    provider: d.provider,
+    model: d.model,
+    gasto_cents: gastoCents,
+    teto_cents: tetoCents,
+  });
+  throw erro;
 }
 
 export async function runModelCall(db: pg.Pool, cfg: LlmEdgeConfig, input: RunModelCallInput, deps: RunModelCallDeps = {}) {
@@ -237,12 +405,21 @@ export async function runModelCall(db: pg.Pool, cfg: LlmEdgeConfig, input: RunMo
     padraoDaOrganizacao: { provider: padrao.provider, defaultModel: padrao.defaultModel },
   }, deps.log ? { log: deps.log } : {});
 
-  // Só re-resolve a credencial quando o painel apontou para OUTRA que não a já
+  // Só re-resolve a credencial quando a decisão aponta para OUTRA que não a já
   // carregada — decifrar duas vezes a mesma chave é custo puro no caminho
   // quente, e cada decifragem é mais um instante com plaintext em memória.
+  //
+  // A condição olha para o QUE FOI DECIDIDO, nunca para o rótulo da origem. Ela
+  // já foi `decisao.origem === 'binding' && (…)`, e amarrar a correção a um
+  // rótulo é o que permite decisão e execução divergirem: qualquer ramo que
+  // devolvesse um provider fora do já resolvido saía com a chave do outro —
+  // silenciosamente, porque `factory` usa `config.provider` e não
+  // `decisao.provider`. `padrao` foi resolvido com `input.llmOverride`, então
+  // comparar contra ele é comparar contra o que de fato está carregado.
+  const credencialJaCarregada = input.llmOverride?.credentialId ?? null;
   const precisaOutraCredencial =
-    decisao.origem === 'binding' &&
-    (decisao.provider !== padrao.provider || decisao.credentialId !== null);
+    decisao.provider !== padrao.provider ||
+    (decisao.credentialId !== null && decisao.credentialId !== credencialJaCarregada);
 
   const config = precisaOutraCredencial
     ? await resolveOrgLlmConfig(db, cfg, input.tenantId, {
@@ -251,40 +428,57 @@ export async function runModelCall(db: pg.Pool, cfg: LlmEdgeConfig, input: RunMo
       })
     : padrao;
 
-
-  // O modelo sai da DECISÃO (painel de provedores → env → padrão da org), e é
-  // resolvido ANTES do budget porque a reserva em voo precisa estimar o custo
-  // dele: sem modelo não há preço, e sem preço a reserva é 0.
   const model = decisao.modelId;
-  const estimateCents = model == null ? 0 : estimateReserveCents(model, input.system, input.messages);
-  const reservedCents = await assertBudget(db, input.tenantId, config.monthlyBudgetCents, {
-    jobId: input.jobId,
-    estimateCents,
-  });
+  if (model === null || model === undefined) {
+    throw new Error(
+      'modelo LLM não definido — configure o ponto no painel de provedores, ' +
+        'organizations.settings.llm.default_model, ou passe input.model',
+    );
+  }
+  if (config.enabledModels.length > 0 && !config.enabledModels.includes(model)) {
+    throw new LlmModelNotEnabledError(model);
+  }
+  const factory = registry[config.provider];
+  if (factory === undefined) {
+    throw new LlmProviderUnknownError(config.provider);
+  }
+  const parsedParams = paramsSchema.safeParse(config.params);
+  if (!parsedParams.success) {
+    throw new Error('params inválidos em organizations.settings.llm.params — corrija a config da org');
+  }
+  const { temperature, topP, topK, maxOutputTokens } = parsedParams.data;
 
   // O `try` abraça TUDO a partir daqui por causa do `finally`: a reserva em voo
-  // precisa ser liberada mesmo quando a chamada morre num throw de validação
-  // (modelo não habilitado, provider desconhecido, params inválidos). Sem isso,
-  // um turno que falha cedo deixaria cents reservados até o processo reiniciar.
+  // precisa ser liberada mesmo quando a chamada morre num throw depois do gate
+  // (erro do provider, insert em llm_calls). Sem isso, um turno que falha
+  // deixaria cents reservados até o processo reiniciar.
+  const estimateCents = estimateReserveCents(model, input.system, input.messages);
+  let reservedCents = 0;
   try {
-    if (model === null || model === undefined) {
-      throw new Error(
-        'modelo LLM não definido — configure o ponto no painel de provedores, ' +
-          'organizations.settings.llm.default_model, ou passe input.model',
-      );
-    }
-    if (config.enabledModels.length > 0 && !config.enabledModels.includes(model)) {
-      throw new LlmModelNotEnabledError(model);
-    }
-    const factory = registry[config.provider];
-    if (factory === undefined) {
-      throw new LlmProviderUnknownError(config.provider);
-    }
-    const parsedParams = paramsSchema.safeParse(config.params);
-    if (!parsedParams.success) {
-      throw new Error('params inválidos em organizations.settings.llm.params — corrija a config da org');
-    }
-    const { temperature, topP, topK, maxOutputTokens } = parsedParams.data;
+    // ═══ O TETO, LOGO ANTES DE SAIR BYTE ═══
+    //
+    // Fica DEPOIS da resolução de modelo/provider, e não antes como o
+    // `assertBudget` de origem, por uma razão de informação: a recusa agora vira
+    // linha em `llm_calls`, e aquela tabela tem `model text not null`. Chamado no
+    // ponto antigo, o gate teria de inventar um nome de modelo para gravar — e um
+    // valor inventado numa tabela de auditoria é pior que a linha faltando.
+    // Continua ANTES de qualquer byte ao provedor, que é a propriedade que
+    // importa: bloqueio custa zero token.
+    reservedCents = await aplicarOrcamento({
+      db,
+      organizationId: input.tenantId,
+      orcamentoDaConfig: config.orcamento,
+      orcamentoIndisponivelPorque: config.orcamentoIndisponivelPorque,
+      chave: cfg.budgetEnforcement ?? 'on',
+      purpose,
+      provider: config.provider,
+      model,
+      origem: decisao.origem,
+      input,
+      jobId: input.jobId,
+      estimateCents,
+      ...(deps.log ? { log: deps.log } : {}),
+    });
 
     // Disciplina de cache: o prefixo estável org-wide (system do playbook + tools
     // em ordem determinística) ganha os breakpoints AQUI, no seam — call sites
@@ -428,7 +622,8 @@ export async function runModelCall(db: pg.Pool, cfg: LlmEdgeConfig, input: RunMo
     };
   } finally {
     // O custo REAL já foi gravado em llm_calls (ou a chamada morreu e não há
-    // custo): a estimativa reservada some da janela em voo aqui, sempre.
+    // custo, ou nem chegou a reservar): a estimativa reservada some da janela
+    // em voo aqui, sempre.
     releaseInFlight(input.jobId, reservedCents);
   }
 }
@@ -445,7 +640,12 @@ export async function runModelCall(db: pg.Pool, cfg: LlmEdgeConfig, input: RunMo
  * Os baldes são escolhidos pela AÇÃO que cada um exige de quem instalou:
  * trocar a chave, escolher outro modelo, esperar/pagar, ou aguardar o provedor.
  */
-function normalizarErro(err: unknown): {
+/**
+ * Exportada para o diagnóstico da instalação usar a MESMA régua. Sem isto,
+ * "por que o funcionário não responde" teria uma classificação própria, e as
+ * duas telas dariam nomes diferentes ao mesmo erro do provedor.
+ */
+export function normalizarErro(err: unknown): {
   error_code: string;
   error_message: string;
   http_status: number | null;
@@ -455,6 +655,15 @@ function normalizarErro(err: unknown): {
     (err as { statusCode?: number; status?: number })?.statusCode ??
     (err as { statusCode?: number; status?: number })?.status ??
     null;
+
+  // O único erro deste seam que NÃO vem do provedor: a recusa é NOSSA, e é
+  // deliberada. Casada pela CLASSE e não por regex, porque aqui não há três
+  // grafias de fornecedor para reconciliar — há um objeto que nós mesmos
+  // construímos. Sem este ramo a tela de Execuções mostraria "Não conseguimos
+  // classificar esta falha" no caso mais bem explicado do produto.
+  if (err instanceof LlmBudgetExceededError) {
+    return { error_code: 'orcamento_esgotado', error_message: redigirMensagemDoProvedor(bruto), http_status: null };
+  }
 
   let codigo = 'erro_desconhecido';
   if (status === 401 || status === 403 || /unauthor|invalid.*api.?key|authentication|incorrect api key/i.test(bruto)) {
@@ -498,12 +707,12 @@ export function redigirMensagemDoProvedor(bruto: string): string {
   const semSegredo = bruto
     // Chaves de API dos provedores que este produto fala: `sk-ant-…`,
     // `sk-or-v1-…`, `sk-proj-…`, `sk-…`, e as do Google (`AIza…`).
-    .replace(/sk-[A-Za-z0-9_-]{8,}/g, '[CHAVE]')
-    .replace(/AIza[A-Za-z0-9_-]{10,}/g, '[CHAVE]')
+    .replace(/sk-[A-Za-z0-9_-]{8,}/g, '[CHAVE]')
+    .replace(/AIza[A-Za-z0-9_-]{10,}/g, '[CHAVE]')
     // O header inteiro, em qualquer caixa, com ou sem `Authorization:` na
     // frente — é assim que ele costuma aparecer ecoado num corpo de erro.
-    .replace(/[Bb]earer\s+[A-Za-z0-9._-]{8,}/g, 'Bearer [CHAVE]')
-    .replace(/(x-api-key|api[-_]?key|authorization)\s*[:=]\s*\S+/gi, '$1: [CHAVE]');
+    .replace(/[Bb]earer\s+[A-Za-z0-9._-]{8,}/g, 'Bearer [CHAVE]')
+    .replace(/(x-api-key|api[-_]?key|authorization)\s*[:=]\s*\S+/gi, '$1: [CHAVE]');
   return scrubMessage(semSegredo).slice(0, 500);
 }
 
