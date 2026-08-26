@@ -243,7 +243,12 @@ describe("o call site — medido no texto, porque a unidade não o alcança", ()
     const inicioDoNucleo = fonteInbound.indexOf("async function executarTurnoDoAgente");
     expect(inicioDoNucleo).toBeGreaterThan(0);
     for (const auxiliar of ["classifyStage(", "maybeCompact("]) {
-      const pos = fonteInbound.indexOf(`await ${auxiliar}`);
+      // `classifyStage` roda em paralelo com `classifyJailbreak` dentro de um
+      // `Promise.allSettled([...])` (F3-11/F4-04) — o `await` está no
+      // `Promise.allSettled`, não colado no nome da função. Buscar o nome cru
+      // ainda detecta corretamente se a chamada sair do núcleo (a posição cai
+      // antes de `inicioDoNucleo`), sem depender de COMO ela é esperada.
+      const pos = fonteInbound.indexOf(auxiliar);
       expect(pos, `${auxiliar} não foi encontrado — o detector mede outra coisa`).toBeGreaterThan(0);
       expect(
         pos,

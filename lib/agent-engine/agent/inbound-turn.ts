@@ -505,7 +505,8 @@ async function resumoDoCheckpointDuravel(
   log: Logger,
 ): Promise<string> {
   try {
-    return buildHandoffSummary(await latestCheckpoint(pool, tenantId, leadId));
+    const contextResetAt = await loadContextResetAt(pool, tenantId, leadId);
+    return buildHandoffSummary(await latestCheckpoint(pool, tenantId, leadId, contextResetAt));
   } catch (err) {
     log.warn('resumo do checkpoint não pôde ser lido — o handoff segue sem ele', {
       error: (err instanceof Error ? err.message : String(err)).slice(0, 120),

@@ -1,6 +1,6 @@
--- 0145_hard_reset_nao_e_de_authenticated
+-- 0179_hard_reset_nao_e_de_authenticated
 --
--- `fn_hard_reset_contact_context` (migration 0143) é SECURITY DEFINER e ESCREVE:
+-- `fn_hard_reset_contact_context` (migration 0177) é SECURITY DEFINER e ESCREVE:
 -- apaga checkpoints, lead_state, lead_notes e conversas do contato, e recebe a
 -- organização por ARGUMENTO — ela não olha membership, porque quem a chama já
 -- resolveu isso. O único call site é `lib/contacts/hard-reset-context.ts`, que
@@ -11,7 +11,7 @@
 -- ANTES de qualquer SQL nosso rodar. Consequência: a função nasceu executável
 -- por QUALQUER usuário logado, de QUALQUER tenant — uma chamada RPC do
 -- PostgREST com a sessão do browser bastaria para apagar o contexto de um
--- contato de outra organização. O `revoke ... from public` que a 0143 já fazia
+-- contato de outra organização. O `revoke ... from public` que a 0177 já fazia
 -- não remove esse grant: são duas origens distintas de EXECUTE, e cada uma
 -- pede o seu revoke (mesma lição das migrations 0108 e 0116 do upstream).
 --

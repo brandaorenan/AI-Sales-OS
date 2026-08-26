@@ -329,21 +329,26 @@ async function handle(req: NextRequest): Promise<Response> {
       });
     }
 
+    marked++;
+  }
+
+  // Rodada que não marcou nenhum contato (e não falhou) não é mutação — o
+  // detalhe por contato já vive em lead_activities (emitLeadActivity acima);
+  // aqui é só o resumo da rodada, mesmo padrão de snooze-watcher/data-retention.
+  if (marked > 0 || failures > 0) {
     void audit({
       action: "context.reset_auto",
-      organizationId: candidate.organizationId,
-      resourceType: "contact",
-      resourceId: candidate.contactId,
+      organizationId: null,
       bypassedRls: true,
       requestId,
       metadata: {
-        lead_id: candidate.leadId,
-        stage_name: candidate.stageName,
-        after_days: candidate.afterDays,
-        jobs_canceled: canceled?.length ?? 0,
+        scanned: due.length,
+        marked,
+        skipped,
+        jobs_canceled: jobsCanceled,
+        failures,
       },
     });
-    marked++;
   }
 
   return ok(

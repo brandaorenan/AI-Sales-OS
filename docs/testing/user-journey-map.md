@@ -427,7 +427,7 @@ Contexto" no funil default, resetada ao baseline de fábrica a cada run).
 | J9.1 | Admin marca "a IA recomeça do zero" e define a carência numa etapa | Switch e campo de dias gravam via `PATCH .../stages/{id}`, persistem após reload, strings exatas da Spec §9.1 na tela, sem jargão técnico | `pipeline-context-policy.spec.ts` (E2E) + `route.test.ts` (integração, rota real) |
 | J9.2 | Manager (abaixo de admin) abre a mesma tela | Bloco de política **não aparece** (escondido, não desabilitado — mesmo precedente do vocabulário/custom fields desta página); resto da etapa (nome, papel, ordem) continua editável | `pipeline-context-policy.spec.ts` (E2E) |
 | J9.3 | `context.policy_changed` auditado | Audit emitido só quando o patch toca `resets_context`/`context_reset_after_days`; `pipeline.stage_updated` seguem separado quando só nome/papel/ordem mudam | `route.test.ts` (integração) |
-| J9.4 | Org nova não tem etapa marcada | `resets_context=false`/`context_reset_after_days=7` nascem do DEFAULT da coluna (migration 0142); `trg_seed_default_pipeline_for_org` não referencia os campos | inspeção do trigger (`baseline.sql`) — nenhuma migration/backfill necessária |
+| J9.4 | Org nova não tem etapa marcada | `resets_context=false`/`context_reset_after_days=7` nascem do DEFAULT da coluna (migration 0176); `trg_seed_default_pipeline_for_org` não referencia os campos | inspeção do trigger (`baseline.sql`) — nenhuma migration/backfill necessária |
 
 **Nota de execução (2026-08-02):** J9.1 e J9.2 EXECUTADOS de ponta a ponta —
 `pnpm build` + `next start` local contra o projeto Supabase remoto dedicado a

@@ -96,6 +96,10 @@ describe("o adapter repassa o que o envelope traz", () => {
           chamadas.push(a);
           return Promise.resolve({ id: "3EB0ABC" });
         },
+        // O adapter apaga o "digitando…" (fire-and-forget) logo após o envio —
+        // ver lib/channels/adapters/waha.ts. Sem este método o dublê quebra a
+        // chamada real que o adapter faz, mesmo sem o teste se importar com ela.
+        setPresence: () => Promise.resolve(),
       }),
     }));
     vi.resetModules();

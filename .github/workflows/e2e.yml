@@ -148,6 +148,7 @@ jobs:
         agente-papeis-operador.spec.ts prova-painel-provedores.spec.ts
         followup-linguagem.spec.ts followup-ramos.spec.ts
         wizard-do-funcionario.spec.ts mfa-opcional.spec.ts inbox-responder-citando.spec.ts
+        context-lifecycle.spec.ts pipeline-context-policy.spec.ts
       # ⚠️ A ORDEM DESTA LISTA NÃO DECIDE A ORDEM DE EXECUÇÃO. O Playwright
       # ordena os arquivos por CAMINHO, não pela ordem em que são passados na
       # linha de comando. Medido no run 31838253496: `marca-logo.spec.ts` estava
@@ -188,6 +189,11 @@ jobs:
       # (Este comentário mora FORA do bloco `>-` porque dentro dele `#` não é
       # comentário: é conteúdo, e cada palavra viraria argumento do playwright.
       # Medido: com o texto dentro, a variável ia de 23 para 205 tokens.)
+      #
+      # `context-lifecycle.spec.ts` e `pipeline-context-policy.spec.ts` (Spec 16,
+      # ciclo de vida do contexto do agente) entraram na sincronia de 2026-08-25 —
+      # existiam no disco e não estavam em lista nenhuma. Medido:
+      # `grep -ciE "waha|resend|nuvemshop|redis"` devolve 0 nas duas.
       SPECS_PARTE_2: >-
         agente-novo-e-uso.spec.ts agente-organiza-operacao.spec.ts
         central-de-avisos-capacidades.spec.ts escalacao-ciclo.spec.ts

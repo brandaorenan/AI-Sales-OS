@@ -131,6 +131,7 @@ describe('adapter WAHA', () => {
     const fetchMock = stubWaha({ id: { _serialized: 'ABC123' } });
 
     const res = await getAdapter('waha').send({
+      organizationId: ORG,
       sessionRef: 'default',
       to: '5531999998888@c.us',
       kind: 'text',
