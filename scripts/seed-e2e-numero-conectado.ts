@@ -83,9 +83,27 @@ async function main(): Promise<void> {
     id = (data as { id: string }).id;
   }
 
+  // A janela padrão do produto é 7h–22h em America/Sao_Paulo. No CI o job
+  // e2e roda de madrugada (UTC): sem override, `postponeUntil` adia o evento
+  // ANTES de tentar o WAHA, a aba mostra "Aguardando envio" e a spec que
+  // existe para provar "envio morto = Falhou" nunca chega no WAHA. 0h–24h
+  // vale SÓ neste número de seed — produção continua 7h–22h.
+  const { error: knobsErr } = await admin.from("channel_knobs").upsert(
+    {
+      organization_id: orgId,
+      channel_session_id: id,
+      window_start_hour: 0,
+      window_end_hour: 24,
+      allow_sunday: true,
+      timezone: "America/Sao_Paulo",
+    } as never,
+    { onConflict: "organization_id,channel_session_id" },
+  );
+  if (knobsErr) throw new Error(`upsert channel_knobs: ${knobsErr.message}`);
+
   creds.numero_conectado = { channel_session_id: id };
   fs.writeFileSync(CREDS_PATH, JSON.stringify(creds, null, 2));
-  console.log(`[seed] número conectado (WORKING): ${id}`);
+  console.log(`[seed] número conectado (WORKING, janela 0–24h): ${id}`);
 }
 
 void main().catch((err) => {

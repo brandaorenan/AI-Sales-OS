@@ -194,19 +194,31 @@ test.describe("webhooks & automações — fluxo completo", () => {
       const directBody = (await directRes.json()) as { data: { lead_id: string } };
       expect(directBody.data.lead_id).toBeTruthy();
 
-      // --- Step 6: drena o event_log (até 3 ticks — trigger legado duplica evento) ---
+      // --- Step 6: drena até a execução EXISTIR (mesma régua da spec da verdade) ---
+      //
+      // Três ticks fixos falhavam quando a fila do event_log já tinha lixo de
+      // specs anteriores na mesma parte do job: o drain processava os velhos
+      // e o lead deste teste ainda estava pending quando a aba era lida.
       const internalSecret = loadInternalSecret();
-      for (let i = 0; i < 3; i++) {
-        // Batch de até 50 eventos pendentes, cada um com handlers que fazem
-        // vários round-trips de DB (e potencialmente WAHA/IA) — bem mais lento
-        // que uma ação de UI; timeout maior que o actionTimeout padrão do teste.
+      let execucoes = 0;
+      for (let tentativa = 0; tentativa < 10 && execucoes === 0; tentativa++) {
         const drainRes = await request.post(`${APP_URL}/api/v1/cron/event-log-drain`, {
           headers: { Authorization: `Bearer ${internalSecret}` },
           timeout: 60_000,
         });
         expect(drainRes.ok()).toBeTruthy();
-        await page.waitForTimeout(700);
+        const resposta = await page.request.get(`${APP_URL}/api/v1/automation-rules/runs?limit=50`);
+        expect(resposta.ok()).toBeTruthy();
+        const corpo = (await resposta.json()) as {
+          data: Array<{ automation_rules: { name: string } | null }>;
+        };
+        execucoes = corpo.data.filter((r) => r.automation_rules?.name === RULE_NAME).length;
+        if (execucoes === 0) await page.waitForTimeout(700);
       }
+      expect(
+        execucoes,
+        "a automação não registrou execução nenhuma — a regra não rodou",
+      ).toBeGreaterThan(0);
 
       // --- Step 7: aba Atividade mostra a run com sucesso ---
       // A regra não tem condição — dispara tanto pro "Lead de Teste" (passo 3)
@@ -215,18 +227,10 @@ test.describe("webhooks & automações — fluxo completo", () => {
       await page.getByRole("tab", { name: "Atividade" }).click();
       const runTitle = page.getByText(RULE_NAME, { exact: true }).first();
       const runCard = cardOf(runTitle);
-      let found = false;
-      for (let attempt = 0; attempt < 12; attempt++) {
-        if ((await runCard.count()) > 0 && (await runCard.getByText("Sucesso").count()) > 0) {
-          found = true;
-          break;
-        }
-        await page.getByRole("button", { name: "Atualizar" }).click();
-        await page.waitForTimeout(1000);
-      }
-      expect(found, "run da automação não apareceu com status Sucesso na aba Atividade").toBe(
-        true,
-      );
+      await expect(
+        page.getByText(RULE_NAME, { exact: true }).first(),
+        "a execução existe no banco mas a aba Atividade não a mostra",
+      ).toBeVisible({ timeout: 20_000 });
       await expect(runCard.getByText("Sucesso")).toBeVisible();
 
       // --- Step 8: /app/pipelines/{pipelineId} mostra o card com a tag ---
