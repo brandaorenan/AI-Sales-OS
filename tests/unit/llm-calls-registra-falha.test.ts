@@ -214,6 +214,18 @@ describe("o que NUNCA pode entrar no log", () => {
     ).catch(() => {});
     expect(JSON.stringify(inserts)).not.toContain(CHAVE_SENTINELA);
   });
+
+  it("eco de Authorization: Bearer sk-… na mensagem de erro também some", async () => {
+    // Provedor OpenAI-compatível ecoa o header no corpo. Sem `\b` de verdade
+    // (word-boundary, não backspace), a regex não casa e a chave vaza na tela.
+    const chaveEcoada = "sk-ant-ECOADA-NO-ERRO-9f3a2b";
+    const { linhaDeErro } = await chamarComErro(
+      new Error(`401 Unauthorized: Authorization: Bearer ${chaveEcoada}`),
+    );
+    const errorMessage = linhaDeErro!.params[9];
+    expect(errorMessage).not.toContain(chaveEcoada);
+    expect(String(errorMessage)).toMatch(/\[CHAVE\]/);
+  });
 });
 
 describe("a origem da escolha viaja com o log", () => {

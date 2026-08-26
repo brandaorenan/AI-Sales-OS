@@ -668,7 +668,7 @@ owner_id_by_email() {
 # primeira (o filtro remove tudo que casa com o marcador, e as duas linhas
 # casavam). Medido na VPS: depois de instalar, sobrava só o agente e o CRM ficava
 # SEM o drain de eventos — a automação inteira parada, em silêncio.
-cron_tag() { printf '# deskcomm:%s:%s' "${PROJECT_DIR:-$PWD}" "${1:?papel da linha (drain|agent)}"; }
+cron_tag() { printf '# deskcomm:%s:%s' "${PROJECT_DIR:-$PWD}" "${1:?papel da linha (drain|agent|stale)}"; }
 
 # Puro (testável sem tocar no crontab real): lê o crontab atual em stdin e
 # imprime o novo. Tira as linhas DESTA instalação — pelo marcador, e também
@@ -731,8 +731,13 @@ setup_stale_event_watcher_cron() {
   [ -n "$secret" ] || { c_ylw "⚠ falta INTERNAL_SECRET/INTERNAL_CRON_SECRET — não ativei o alarme de eventos parados."; return 0; }
   [ -n "${NEXT_PUBLIC_APP_URL:-}" ] || { c_ylw "⚠ falta NEXT_PUBLIC_APP_URL — não ativei o alarme de eventos parados."; return 0; }
 
-  local cron_line="* * * * * curl -fsS -m60 -H \"Authorization: Bearer ${secret}\" \"${NEXT_PUBLIC_APP_URL}/api/v1/cron/event-log-stale-watcher\" >/dev/null 2>&1"
-  ( crontab -l 2>/dev/null | grep -v 'event-log-stale-watcher' || true; echo "$cron_line" ) | crontab -
+  # Mesmo padrão do drain/agent: substitui SÓ a linha DESTA instalação.
+  # `grep -v 'event-log-stale-watcher'` apagava o alarme de toda vizinha que
+  # compartilhasse o Unix user na VPS — a rota é a mesma em todas.
+  local url_stale="${NEXT_PUBLIC_APP_URL}/api/v1/cron/event-log-stale-watcher"
+  local marcador; marcador="$(cron_tag stale)"
+  local cron_line="* * * * * curl -fsS -m60 -H \"Authorization: Bearer ${secret}\" \"${url_stale}\" >/dev/null 2>&1 ${marcador}"
+  ( crontab -l 2>/dev/null | cron_merge "$marcador" "$url_stale" "$cron_line" ) | crontab -
   c_grn "✓ alarme de eventos parados ativo (a cada minuto)"
 }
 

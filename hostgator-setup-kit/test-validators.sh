@@ -830,6 +830,22 @@ else
   printf '  ✗ uma apagou a outra (drain=%s, agente=%s — esperava 1 de cada)\n' "$tem_drain" "$tem_agent"; fail=1
 fi
 
+# O stale-watcher também: `grep -v 'event-log-stale-watcher'` apagava o alarme
+# de TODA instalação vizinha no mesmo Unix user. O marcador por instalação é
+# o que preserva a vizinha e ainda substitui a própria linha legado.
+CRONTAB_COM_STALE="${CRONTAB_VIZINHO}
+* * * * * curl -fsS -m60 -H \"Authorization: Bearer SEGREDO\" \"https://crm.deskcomm.com.br/api/v1/cron/event-log-stale-watcher\" >/dev/null 2>&1"
+TAG_STALE="# deskcomm:${DIR}:stale"
+L_STALE="* * * * * curl \"https://novo.exemplo.com.br/api/v1/cron/event-log-stale-watcher\" $TAG_STALE"
+depois_stale="$(printf '%s\n' "$CRONTAB_COM_STALE" | cron_merge "$TAG_STALE" \
+  'https://novo.exemplo.com.br/api/v1/cron/event-log-stale-watcher' "$L_STALE")"
+if printf '%s' "$depois_stale" | grep -qF 'crm.deskcomm.com.br/api/v1/cron/event-log-stale-watcher' \
+   && printf '%s' "$depois_stale" | grep -qF 'novo.exemplo.com.br/api/v1/cron/event-log-stale-watcher'; then
+  printf '  ✓ stale-watcher novo e do vizinho coexistem\n'
+else
+  printf '  ✗ stale-watcher apagou o do vizinho ou não entrou\n'; fail=1
+fi
+
 echo "provisionamento do Supabase: senha do banco"
 # Dois testes distintos, porque o defeito e o contrato moram em lugares
 # diferentes — e o primeiro teste que escrevi aqui era VÁCUO por não separá-los.
