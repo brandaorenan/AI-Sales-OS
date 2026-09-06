@@ -1,6 +1,7 @@
 "use client";
 import { useState } from "react";
 import { toast } from "sonner";
+import { useT } from "@/hooks/i18n/useT";
 import {
   Dialog,
   DialogContent,
@@ -38,6 +39,7 @@ export function ResetConversationDialog({
   open,
   onOpenChange,
 }: Props) {
+  const t = useT();
   const reset = useHardResetContext();
   const [confirm, setConfirm] = useState("");
   const [purgeKb, setPurgeKb] = useState(false);
@@ -57,7 +59,7 @@ export function ResetConversationDialog({
         confirmation: CONFIRM_TEXT,
         purge_knowledge_base: purgeKb,
       });
-      toast.success("Contexto apagado.");
+      toast.success(t("Contexto apagado."));
       resetForm();
       onOpenChange(false);
     } catch (err) {
@@ -82,17 +84,17 @@ export function ResetConversationDialog({
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Apagar o contexto deste contato</DialogTitle>
+          <DialogTitle>{t("Apagar o contexto deste contato")}</DialogTitle>
           <DialogDescription>
-            Isso apaga as mensagens, o resumo, as notas e o estado do funil da
-            IA para <strong>{contactName}</strong>. O contato e o negócio
-            continuam existindo, com toda a ficha e o histórico de pedidos.
+            {t("Isso apaga as mensagens, o resumo, as notas e o estado do funil da IA para")}{" "}
+            <strong>{contactName}</strong>
+            {t(". O contato e o negócio continuam existindo, com toda a ficha e o histórico de pedidos.")}
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-4">
           <p className="rounded-md border border-error-fg/30 bg-error-bg p-3 text-sm text-error-fg">
-            Esta ação não pode ser desfeita.
+            {t("Esta ação não pode ser desfeita.")}
           </p>
 
           <label className="flex cursor-pointer items-start gap-2 text-sm">
@@ -100,21 +102,19 @@ export function ResetConversationDialog({
               type="checkbox"
               checked={purgeKb}
               onChange={(e) => setPurgeKb(e.target.checked)}
-              className="mt-0.5 h-4 w-4 rounded border-border"
+              className="mt-0.5 h-4 w-4 rounded-md border-border"
             />
             <span>
-              Remover também o que a IA aprendeu dessas conversas na base de
-              conhecimento
+              {t("Remover também o que a IA aprendeu dessas conversas na base de conhecimento")}
               <span className="mt-1 block text-xs text-muted-foreground">
-                Marque se estas conversas foram testes e não devem servir de
-                referência para outros atendimentos.
+                {t("Marque se estas conversas foram testes e não devem servir de referência para outros atendimentos.")}
               </span>
             </span>
           </label>
 
           <div className="space-y-2">
             <Label htmlFor="reset-confirm">
-              Digite <strong>{CONFIRM_TEXT}</strong> para confirmar
+              {t("Digite")} <strong>{CONFIRM_TEXT}</strong> {t("para confirmar")}
             </Label>
             <Input
               id="reset-confirm"
@@ -137,14 +137,14 @@ export function ResetConversationDialog({
               onClick={() => handleOpenChange(false)}
               disabled={reset.isPending}
             >
-              Cancelar
+              {t("Cancelar")}
             </Button>
             <Button
               variant="destructive"
               onClick={handleSubmit}
               disabled={confirm !== CONFIRM_TEXT || reset.isPending}
             >
-              {reset.isPending ? "Apagando…" : "Apagar contexto"}
+              {reset.isPending ? t("Apagando…") : t("Apagar contexto")}
             </Button>
           </DialogFooter>
         </div>

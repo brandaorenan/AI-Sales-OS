@@ -1,10 +1,13 @@
 /**
- * GET   /api/v1/ai/followup-flows/:id — pointer completo (draft_graph,
+ * GET    /api/v1/ai/followup-flows/:id — pointer completo (draft_graph,
  *   trigger_config, handoff_policy) — any org member.
- * PATCH /api/v1/ai/followup-flows/:id — atualiza campos parciais (manager+).
+ * PATCH  /api/v1/ai/followup-flows/:id — atualiza campos parciais (manager+).
  *   draft_graph é validado só estruturalmente (flowGraphSchema) — a validação
  *   semântica de publish (reachability, coverage) roda em /publish.
+ * DELETE /api/v1/ai/followup-flows/:id — apaga o pointer (manager+). Enrollment
+ *   e versões saem no cascade / na ordem abaixo; não dá para desfazer.
  */
+import { rascunhoDoFluxo } from "@/lib/followup/rascunho";
 import { randomUUID } from "node:crypto";
 import type { NextRequest } from "next/server";
 
@@ -57,9 +60,19 @@ export async function GET(_req: NextRequest, ctx: RouteCtx): Promise<Response> {
     .order("created_at", { ascending: false });
   if (versionsErr) return fail("internal_error", versionsErr.message, 500, { requestId });
 
+  // Rascunho ausente COM versão publicada: a tela abre o que está NO AR. Ver
+  // `lib/followup/rascunho.ts` — um fluxo publicado por fora do construtor
+  // abria vazio, e salvar por cima trocava o fluxo do ar por quase-nada.
+  const draft_graph = await rascunhoDoFluxo(
+    supabase,
+    data as unknown as { draft_graph: unknown; active_version_id: string | null },
+    activeOrg.orgId,
+  );
+
   return ok(
     {
       ...data,
+      draft_graph,
       versions_count: versionRows?.length ?? 0,
       previous_version_id: versionRows?.[1]?.id ?? null,
     },
@@ -147,4 +160,67 @@ export async function PATCH(req: NextRequest, ctx: RouteCtx): Promise<Response> 
   });
 
   return ok(updated, { requestId });
+}
+
+export async function DELETE(_req: NextRequest, ctx: RouteCtx): Promise<Response> {
+  const requestId = randomUUID();
+  const { id } = await ctx.params;
+  if (!UUID_RX.test(id)) {
+    return fail("invalid_request", "id inválido.", 400, { requestId });
+  }
+
+  const authz = await requireRole("manager", { requestId, resource: "followup_flows" });
+  if (!authz.ok) return authz.response;
+  const { user, org: activeOrg } = authz;
+
+  const supabase = await createClient();
+  const { data: existing, error: fetchErr } = await supabase
+    .from("followup_flow_pointers")
+    .select("id")
+    .eq("id", id)
+    .eq("organization_id", activeOrg.orgId)
+    .maybeSingle();
+  if (fetchErr) return fail("internal_error", fetchErr.message, 500, { requestId });
+  if (!existing) return fail("not_found", "Fluxo não encontrado.", 404, { requestId });
+
+  // Enrollment referencia version_id; pointer referencia active_version_id.
+  // Soltar o relógio nessa ordem evita 23503 no Postgres.
+  const { error: enrErr } = await supabase
+    .from("followup_enrollments")
+    .delete()
+    .eq("pointer_id", id)
+    .eq("organization_id", activeOrg.orgId);
+  if (enrErr) return fail("internal_error", enrErr.message, 500, { requestId });
+
+  const { error: unpinErr } = await supabase
+    .from("followup_flow_pointers")
+    .update({ active_version_id: null, updated_at: new Date().toISOString() })
+    .eq("id", id)
+    .eq("organization_id", activeOrg.orgId);
+  if (unpinErr) return fail("internal_error", unpinErr.message, 500, { requestId });
+
+  const { error: verErr } = await supabase
+    .from("followup_flow_versions")
+    .delete()
+    .eq("pointer_id", id)
+    .eq("organization_id", activeOrg.orgId);
+  if (verErr) return fail("internal_error", verErr.message, 500, { requestId });
+
+  const { error: delErr } = await supabase
+    .from("followup_flow_pointers")
+    .delete()
+    .eq("id", id)
+    .eq("organization_id", activeOrg.orgId);
+  if (delErr) return fail("internal_error", delErr.message, 500, { requestId });
+
+  void audit({
+    action: "followup_flow.deleted",
+    actorUserId: user.id,
+    organizationId: activeOrg.orgId,
+    resourceType: "followup_flow_pointer",
+    resourceId: id,
+    requestId,
+  });
+
+  return ok({ id }, { requestId });
 }

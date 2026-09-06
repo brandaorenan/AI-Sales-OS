@@ -432,6 +432,7 @@ describe("PATCH — política de expiração do contexto (Spec 16 §9.1)", () =>
           full_name: null,
           avatar_url: null,
           is_platform_admin: false,
+          idioma: "pt-BR" as const,
           organizations: [{ organization_id: ORG_ID, organization_name: "Org", role: "manager" }],
         },
         org: { orgId: ORG_ID, name: "Org", role: "manager" },

@@ -1,5 +1,5 @@
 /**
- * Core handlers para /api/v1/contacts (lista + get + create + patch).
+ * Core handlers para /api/v1/contacts (lista + get + create + patch + delete).
  *
  * Reusados pelo Route Handler REST e por MCP tools (S-13.03/04).
  * - Recebem actor polimórfico (`user` | `ai_agent`).
@@ -11,8 +11,11 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { ApiError } from "@/lib/api/types";
 import type { Actor, HandlerCtx } from "@/lib/api/handlers/types";
 import { audit } from "@/lib/audit";
+import { roleAtLeast } from "@/lib/auth/types";
+import { canonicalPhoneBR, phoneLookupVariants } from "@/lib/channels/phone-variants";
 import { hashCpf, encryptCpfSql } from "@/lib/contacts/cpf";
 import type { Contact } from "@/lib/types/contacts";
+import { ensureConversation, sessaoProntaParaEnvio } from "@/lib/automation/start-conversation";
 import type {
   ContactCreate,
   ContactPatch,
@@ -24,14 +27,7 @@ import { contactListQuerySchema } from "@/lib/schemas";
 type SB = SupabaseClient;
 
 const SELECT_COLS =
-  "id, organization_id, name, display_name, email, email_normalized, phone_number, cpf_hash, birthdate, is_blocked, blocked_reason, is_anonymized, anonymized_at, is_merged_into, merged_at, consent, tags, source, source_metadata, created_at, updated_at, last_activity_at";
-
-const ROLE_RANK: Record<string, number> = {
-  viewer: 1,
-  agent: 2,
-  manager: 3,
-  admin: 4,
-};
+  "id, organization_id, name, display_name, email, email_normalized, phone_number, cpf_hash, birthdate, is_blocked, blocked_reason, is_anonymized, anonymized_at, is_merged_into, merged_at, consent, tags, source, source_metadata, custom_fields, created_at, updated_at, last_activity_at";
 
 interface CursorPayload {
   sort: string | null;
@@ -99,6 +95,24 @@ export async function listContactsHandler(
     .from("contacts")
     .select(SELECT_COLS)
     .eq("organization_id", ctx.organization_id)
+    // A LÁPIDE DE FUSÃO NÃO É UM CONTATO VIVO.
+    //
+    // `is_merged_into` marca o cadastro que foi absorvido por outro. Ele não é
+    // apagado de propósito (é o que libera telefone e e-mail para o vencedor
+    // herdar, e é o registro da fusão), mas ele deixou de ser uma pessoa da
+    // base — e o resto do produto já o trata assim: `contacts/duplicates`, o
+    // webhook de captação (`webhooks/in/[token]`) e as duas leituras de
+    // `lib/channels/contato-por-telefone` filtram `is_merged_into is null`.
+    // Esta listagem era a ÚNICA que não filtrava.
+    //
+    // Sem esta linha, a fusão parece não ter acontecido: medido pela tela em
+    // 2026-09-04, logo depois de juntar dois cadastros a lista seguia mostrando
+    // OS DOIS, com o mesmo telefone e ambos com status "ativo" — e quem opera
+    // ou tenta juntar de novo (o diálogo de duplicados já não os oferece) ou
+    // conclui que o recurso não funciona. Antes de a fusão existir na tela, a
+    // coluna só era escrita por uma data migration de mão única, e por isso
+    // ninguém tinha esbarrado nisto.
+    .is("is_merged_into", null)
     .order(sortCol, { ascending: asc, nullsFirst: false })
     .order("id", { ascending: asc })
     .limit(q.limit + 1);
@@ -127,6 +141,18 @@ export async function listContactsHandler(
       `email.ilike.%${s}%`,
       `phone_number.ilike.%${s}%`,
     ];
+    if (digits.length >= 8) {
+      // 10/11 dígitos sem DDI: no Brasil é DDD+local. Sem o 55, `3284793302`
+      // não gera a variante com o 9 e o cadastro `+5532984793302` some da busca.
+      const base =
+        !digits.startsWith("55") && (digits.length === 10 || digits.length === 11)
+          ? `55${digits}`
+          : digits;
+      for (const v of phoneLookupVariants(base)) {
+        const d = v.replace(/\D/g, "");
+        if (d && d !== digits) orParts.push(`phone_number.ilike.%${d}%`);
+      }
+    }
     if (digits.length === 11) {
       orParts.push(`cpf_hash.eq.${hashCpf(digits)}`);
     }
@@ -271,8 +297,7 @@ export async function getContactHandler(
       .maybeSingle();
 
     const role = membership?.role as string | undefined;
-    const rank = role ? (ROLE_RANK[role] ?? 0) : 0;
-    if (rank < ROLE_RANK.manager!) {
+    if (!roleAtLeast(role, "manager")) {
       cpfDecryptDenied = true;
     } else {
       const { data: dec, error: decErr } = await supabase.rpc("decrypt_cpf", {
@@ -337,11 +362,12 @@ export async function createContactHandler(
     name: input.name ?? null,
     display_name: input.display_name ?? null,
     email: input.email ?? null,
-    phone_number: input.phone_number ?? null,
+    phone_number: input.phone_number ? canonicalPhoneBR(input.phone_number) : null,
     birthdate: input.birthdate ?? null,
     tags: input.tags ?? [],
     source: input.source,
     source_metadata: input.source_metadata ?? {},
+    custom_fields: input.custom_fields ?? {},
     consent: input.consent ?? {},
   };
 
@@ -362,6 +388,16 @@ export async function createContactHandler(
   }
 
   const contact = created as Contact;
+  if (contact.phone_number) {
+    try {
+      const sessionId = await sessaoProntaParaEnvio(supabase, ctx.organization_id);
+      if (sessionId) {
+        await ensureConversation(supabase, ctx.organization_id, contact.id, sessionId);
+      }
+    } catch {
+      // conversa no create é best-effort; o contato já existe
+    }
+  }
 
   await supabase
     .rpc("emit_event", {
@@ -413,7 +449,9 @@ export async function patchContactHandler(
     // e-mail foi substituído não tinha onde olhar. `consent` vem junto porque o
     // patch dele passou a ser MERGE (ver abaixo), e merge precisa do estado
     // anterior.
-    .select("id, organization_id, is_anonymized, tags, email, phone_number, name, display_name, consent")
+    .select(
+      "id, organization_id, is_anonymized, tags, email, phone_number, name, display_name, consent, custom_fields",
+    )
     .eq("id", contactId)
     .maybeSingle();
 
@@ -444,11 +482,18 @@ export async function patchContactHandler(
   //
   // O banco deriva a coluna sozinho — era só não escrever nela.
   if (input.email !== undefined) patch.email = input.email;
-  if (input.phone_number !== undefined) patch.phone_number = input.phone_number;
+  if (input.phone_number !== undefined) {
+    patch.phone_number = input.phone_number ? canonicalPhoneBR(input.phone_number) : input.phone_number;
+  }
   if (input.birthdate !== undefined) patch.birthdate = input.birthdate;
   if (input.tags !== undefined) patch.tags = input.tags;
   if (input.source !== undefined) patch.source = input.source;
   if (input.source_metadata !== undefined) patch.source_metadata = input.source_metadata;
+  // SUBSTITUIÇÃO, não merge — ao contrário de `consent`. O editor da tela manda
+  // o objeto inteiro que ele renderizou a partir do schema do funil; um merge
+  // aqui tornaria IMPOSSÍVEL apagar um campo pela tela, porque a chave removida
+  // voltaria do estado anterior a cada gravação.
+  if (input.custom_fields !== undefined) patch.custom_fields = input.custom_fields;
   if (input.consent !== undefined) {
     // MERGE por finalidade, nunca substituição.
     //
@@ -576,4 +621,101 @@ export async function patchContactHandler(
   });
 
   return contact;
+}
+
+// ---------------------------------------------------------------------------
+// delete
+// ---------------------------------------------------------------------------
+
+function throwOnDbError(
+  err: { code?: string; message: string } | null,
+  requestId: string,
+): void {
+  if (!err) return;
+  // conversations/messages apontam para contacts com ON DELETE RESTRICT.
+  if (err.code === "23503") {
+    throw new ApiError(
+      409,
+      "state_conflict",
+      undefined,
+      requestId,
+      "Não foi possível excluir: o contato ainda tem registros vinculados.",
+    );
+  }
+  throw new ApiError(500, "internal_error", undefined, requestId, err.message);
+}
+
+export async function deleteContactHandler(
+  supabase: SB,
+  ctx: HandlerCtx,
+  contactId: string,
+): Promise<{ id: string }> {
+  const { data: existing, error: selErr } = await supabase
+    .from("contacts")
+    .select("id, organization_id")
+    .eq("id", contactId)
+    .eq("organization_id", ctx.organization_id)
+    .maybeSingle();
+
+  if (selErr) {
+    throw new ApiError(500, "internal_error", undefined, ctx.requestId, selErr.message);
+  }
+  if (!existing) {
+    throw new ApiError(404, "not_found", undefined, ctx.requestId, "Contato não encontrado.");
+  }
+
+  // Mensagens e conversas RESTRICT no contato: apagar primeiro, senão o DELETE
+  // da ficha falha para qualquer lead que já falou no canal.
+  const { error: msgErr } = await supabase
+    .from("messages")
+    .delete()
+    .eq("contact_id", contactId)
+    .eq("organization_id", ctx.organization_id);
+  throwOnDbError(msgErr, ctx.requestId);
+
+  const { error: convErr } = await supabase
+    .from("conversations")
+    .delete()
+    .eq("contact_id", contactId)
+    .eq("organization_id", ctx.organization_id);
+  throwOnDbError(convErr, ctx.requestId);
+
+  const { data: deleted, error: delErr } = await supabase
+    .from("contacts")
+    .delete()
+    .eq("id", contactId)
+    .eq("organization_id", ctx.organization_id)
+    .select("id")
+    .maybeSingle();
+  throwOnDbError(delErr, ctx.requestId);
+  if (!deleted) {
+    throw new ApiError(404, "not_found", undefined, ctx.requestId, "Contato não encontrado.");
+  }
+
+  const a = actorAuditPayload(ctx.actor);
+
+  await supabase
+    .rpc("emit_event", {
+      p_event_type: "contact.deleted",
+      p_entity_kind: "contact",
+      p_entity_id: contactId,
+      p_payload: {},
+      p_metadata: { request_id: ctx.requestId, ...a.metadataActor },
+      p_organization_id: ctx.organization_id,
+    })
+    .then(({ error }) => {
+      if (error) console.error("[contacts.delete] emit_event failed", error.message);
+    });
+
+  await audit({
+    action: "contact.deleted",
+    actorUserId: a.actorUserId,
+    organizationId: ctx.organization_id,
+    resourceType: "contact",
+    resourceId: contactId,
+    requestId: ctx.requestId,
+    metadata: a.metadataActor,
+  });
+
+  return { id: deleted.id as string };
 }

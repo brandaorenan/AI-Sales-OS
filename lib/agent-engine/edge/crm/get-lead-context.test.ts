@@ -78,7 +78,12 @@ function dbFake(
         const filtrado = cutoff === null || cutoff === undefined
           ? historyDesc
           : historyDesc.filter((m) => Date.parse(m.sent_at) > Date.parse(cutoff));
-        return { rows: [...filtrado].reverse() } as never;
+        // O driver `pg` de verdade devolve `timestamptz` como `Date`, não como
+        // string — só na FRONTEIRA da leitura (o filtro acima segue em string,
+        // que é o que o fixture guarda).
+        return {
+          rows: [...filtrado].reverse().map((m) => ({ ...m, sent_at: new Date(m.sent_at) })),
+        } as never;
       }
       throw new Error(`query inesperada no teste: ${text}`);
     },
@@ -93,7 +98,7 @@ describe('getLeadContext — fronteira de sessão (Spec 16 §4)', () => {
     const result = await getLeadContext(
       db,
       {} as CrmEdgeConfig,
-      { tenantId: 'org-1', leadId: 'contact-1', conversationId: CONVERSATION_ID },
+      { tenantId: 'org-1', leadId: 'contact-1', conversationId: CONVERSATION_ID, fuso: 'America/Sao_Paulo' },
       { ...KNOBS_BASE, sessionGapHours: 6 },
     );
     expect(result.ok).toBe(true);
@@ -110,7 +115,7 @@ describe('getLeadContext — fronteira de sessão (Spec 16 §4)', () => {
     const result = await getLeadContext(
       db,
       {} as CrmEdgeConfig,
-      { tenantId: 'org-1', leadId: 'contact-1', conversationId: CONVERSATION_ID },
+      { tenantId: 'org-1', leadId: 'contact-1', conversationId: CONVERSATION_ID, fuso: 'America/Sao_Paulo' },
       { ...KNOBS_BASE, sessionGapHours: null },
     );
     expect(result.ok).toBe(true);
@@ -123,7 +128,7 @@ describe('getLeadContext — fronteira de sessão (Spec 16 §4)', () => {
     const result = await getLeadContext(
       db,
       {} as CrmEdgeConfig,
-      { tenantId: 'org-1', leadId: 'contact-1', conversationId: CONVERSATION_ID },
+      { tenantId: 'org-1', leadId: 'contact-1', conversationId: CONVERSATION_ID, fuso: 'America/Sao_Paulo' },
       KNOBS_BASE,
     );
     expect(result.ok).toBe(true);
@@ -139,7 +144,7 @@ describe('getLeadContext — fronteira de sessão (Spec 16 §4)', () => {
     const result = await getLeadContext(
       db,
       {} as CrmEdgeConfig,
-      { tenantId: 'org-1', leadId: 'contact-1', conversationId: CONVERSATION_ID },
+      { tenantId: 'org-1', leadId: 'contact-1', conversationId: CONVERSATION_ID, fuso: 'America/Sao_Paulo' },
       { ...KNOBS_BASE, sessionGapHours: 6 },
     );
     expect(result.ok).toBe(true);
@@ -155,7 +160,7 @@ describe('getLeadContext — marca de corte contacts.context_reset_at (Spec 16 �
     const result = await getLeadContext(
       db,
       {} as CrmEdgeConfig,
-      { tenantId: 'org-1', leadId: 'contact-1', conversationId: CONVERSATION_ID },
+      { tenantId: 'org-1', leadId: 'contact-1', conversationId: CONVERSATION_ID, fuso: 'America/Sao_Paulo' },
       KNOBS_BASE,
     );
     expect(result.ok).toBe(true);
@@ -168,7 +173,7 @@ describe('getLeadContext — marca de corte contacts.context_reset_at (Spec 16 �
     const result = await getLeadContext(
       db,
       {} as CrmEdgeConfig,
-      { tenantId: 'org-1', leadId: 'contact-1', conversationId: CONVERSATION_ID },
+      { tenantId: 'org-1', leadId: 'contact-1', conversationId: CONVERSATION_ID, fuso: 'America/Sao_Paulo' },
       KNOBS_BASE,
     );
     expect(result.ok).toBe(true);
@@ -183,7 +188,7 @@ describe('getLeadContext — marca de corte contacts.context_reset_at (Spec 16 �
     const result = await getLeadContext(
       db,
       {} as CrmEdgeConfig,
-      { tenantId: 'org-1', leadId: 'contact-1', conversationId: CONVERSATION_ID },
+      { tenantId: 'org-1', leadId: 'contact-1', conversationId: CONVERSATION_ID, fuso: 'America/Sao_Paulo' },
       { ...KNOBS_BASE, sessionGapHours: 6 },
     );
     expect(result.ok).toBe(true);
@@ -213,7 +218,7 @@ describe('getLeadContext — round-trip do corte desfeito (Achado B da review PR
     const result = await getLeadContext(
       db,
       {} as CrmEdgeConfig,
-      { tenantId: 'org-1', leadId: 'contact-1', conversationId: CONVERSATION_ID },
+      { tenantId: 'org-1', leadId: 'contact-1', conversationId: CONVERSATION_ID, fuso: 'America/Sao_Paulo' },
       KNOBS_BASE,
     );
     expect(result.ok).toBe(true);
@@ -226,7 +231,7 @@ describe('getLeadContext — round-trip do corte desfeito (Achado B da review PR
     const result = await getLeadContext(
       db,
       {} as CrmEdgeConfig,
-      { tenantId: 'org-1', leadId: 'contact-1', conversationId: CONVERSATION_ID },
+      { tenantId: 'org-1', leadId: 'contact-1', conversationId: CONVERSATION_ID, fuso: 'America/Sao_Paulo' },
       KNOBS_BASE,
     );
     expect(result.ok).toBe(true);
@@ -241,7 +246,7 @@ describe('getLeadContext — ficha do cliente (Spec 16 §8.1)', () => {
     const result = await getLeadContext(
       db,
       {} as CrmEdgeConfig,
-      { tenantId: 'org-1', leadId: 'contact-1', conversationId: CONVERSATION_ID },
+      { tenantId: 'org-1', leadId: 'contact-1', conversationId: CONVERSATION_ID, fuso: 'America/Sao_Paulo' },
       KNOBS_BASE,
     );
     expect(result.ok).toBe(true);
@@ -260,7 +265,7 @@ describe('getLeadContext — ficha do cliente (Spec 16 §8.1)', () => {
     const result = await getLeadContext(
       db,
       {} as CrmEdgeConfig,
-      { tenantId: 'org-1', leadId: 'contact-1', conversationId: CONVERSATION_ID },
+      { tenantId: 'org-1', leadId: 'contact-1', conversationId: CONVERSATION_ID, fuso: 'America/Sao_Paulo' },
       KNOBS_BASE,
     );
     expect(result.ok).toBe(true);
@@ -281,7 +286,7 @@ describe('getLeadContext — ficha do cliente (Spec 16 §8.1)', () => {
     const result = await getLeadContext(
       db,
       {} as CrmEdgeConfig,
-      { tenantId: 'org-1', leadId: 'contact-1', conversationId: CONVERSATION_ID },
+      { tenantId: 'org-1', leadId: 'contact-1', conversationId: CONVERSATION_ID, fuso: 'America/Sao_Paulo' },
       KNOBS_BASE,
     );
     expect(result.ok).toBe(true);
@@ -302,7 +307,7 @@ describe('getLeadContext — ficha do cliente (Spec 16 §8.1)', () => {
     const result = await getLeadContext(
       db,
       {} as CrmEdgeConfig,
-      { tenantId: 'org-1', leadId: 'contact-1', conversationId: CONVERSATION_ID },
+      { tenantId: 'org-1', leadId: 'contact-1', conversationId: CONVERSATION_ID, fuso: 'America/Sao_Paulo' },
       KNOBS_BASE,
     );
     expect(result.ok).toBe(true);
@@ -322,7 +327,7 @@ describe('getLeadContext — ficha do cliente (Spec 16 §8.1)', () => {
     const result = await getLeadContext(
       db,
       {} as CrmEdgeConfig,
-      { tenantId: 'org-1', leadId: 'contact-1', conversationId: CONVERSATION_ID },
+      { tenantId: 'org-1', leadId: 'contact-1', conversationId: CONVERSATION_ID, fuso: 'America/Sao_Paulo' },
       KNOBS_BASE,
     );
     expect(result.ok).toBe(true);
@@ -337,7 +342,7 @@ describe('getLeadContext — aviso de atendimento anterior (Spec 16 §8.2)', () 
     const result = await getLeadContext(
       db,
       {} as CrmEdgeConfig,
-      { tenantId: 'org-1', leadId: 'contact-1', conversationId: CONVERSATION_ID },
+      { tenantId: 'org-1', leadId: 'contact-1', conversationId: CONVERSATION_ID, fuso: 'America/Sao_Paulo' },
       KNOBS_BASE,
     );
     expect(result.ok).toBe(true);
@@ -350,7 +355,7 @@ describe('getLeadContext — aviso de atendimento anterior (Spec 16 §8.2)', () 
     const result = await getLeadContext(
       db,
       {} as CrmEdgeConfig,
-      { tenantId: 'org-1', leadId: 'contact-1', conversationId: CONVERSATION_ID },
+      { tenantId: 'org-1', leadId: 'contact-1', conversationId: CONVERSATION_ID, fuso: 'America/Sao_Paulo' },
       KNOBS_BASE,
     );
     expect(result.ok).toBe(true);
@@ -363,7 +368,7 @@ describe('getLeadContext — aviso de atendimento anterior (Spec 16 §8.2)', () 
     const result = await getLeadContext(
       db,
       {} as CrmEdgeConfig,
-      { tenantId: 'org-1', leadId: 'contact-1', conversationId: CONVERSATION_ID },
+      { tenantId: 'org-1', leadId: 'contact-1', conversationId: CONVERSATION_ID, fuso: 'America/Sao_Paulo' },
       { ...KNOBS_BASE, sessionGapHours: 6 },
     );
     expect(result.ok).toBe(true);
@@ -379,7 +384,7 @@ describe('getLeadContext — aviso de atendimento anterior (Spec 16 §8.2)', () 
     const result = await getLeadContext(
       db,
       {} as CrmEdgeConfig,
-      { tenantId: 'org-1', leadId: 'contact-1', conversationId: CONVERSATION_ID },
+      { tenantId: 'org-1', leadId: 'contact-1', conversationId: CONVERSATION_ID, fuso: 'America/Sao_Paulo' },
       { ...KNOBS_BASE, sessionGapHours: 6 },
     );
     expect(result.ok).toBe(true);
@@ -393,7 +398,7 @@ describe('getLeadContext — aviso de atendimento anterior (Spec 16 §8.2)', () 
     const result = await getLeadContext(
       db,
       {} as CrmEdgeConfig,
-      { tenantId: 'org-1', leadId: 'contact-1', conversationId: CONVERSATION_ID },
+      { tenantId: 'org-1', leadId: 'contact-1', conversationId: CONVERSATION_ID, fuso: 'America/Sao_Paulo' },
       KNOBS_BASE,
     );
     expect(result.ok).toBe(true);
