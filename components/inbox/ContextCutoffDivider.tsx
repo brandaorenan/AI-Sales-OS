@@ -1,12 +1,12 @@
 "use client";
 import { format } from "date-fns";
-import { ptBR } from "date-fns/locale";
 import {
   Tooltip,
   TooltipContent,
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { useLocaleDeData } from "@/hooks/i18n/useLocaleDeData";
 import { motivoDoCorte } from "@/lib/inbox/context-cutoff-label";
 
 /**
@@ -23,7 +23,8 @@ interface Props {
 }
 
 export function ContextCutoffDivider({ resetAt, reason }: Props) {
-  const data = format(new Date(resetAt), "dd/MM/yyyy", { locale: ptBR });
+  const localeDaData = useLocaleDeData();
+  const data = format(new Date(resetAt), "dd/MM/yyyy", { locale: localeDaData });
   const motivo = motivoDoCorte(reason);
   const label = `Contexto reiniciado em ${data} · ${motivo}`;
 

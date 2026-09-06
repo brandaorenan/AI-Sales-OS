@@ -27,11 +27,13 @@ import { encryptCpfSql, hashCpf } from "@/lib/contacts/cpf";
 import {
   CSV_MAX_BYTES,
   CSV_MAX_DATA_ROWS,
+  decodificarCsv,
   mapHeader,
   mapLinha,
   parseCsv,
 } from "@/lib/contacts/csv";
 import { contactCreateSchema, isValidCpf } from "@/lib/schemas";
+import { phoneLookupVariants } from "@/lib/channels/phone-variants";
 import { createClient } from "@/lib/supabase/server";
 
 export const dynamic = "force-dynamic";
@@ -91,7 +93,12 @@ export async function POST(req: NextRequest): Promise<Response> {
   }
 
   // ─── Parse + validação de linhas (puro; nada tocou no banco ainda) ───────
-  const text = await file.text();
+  // Os BYTES, não `file.text()` — ver `decodificarCsv` (#483).
+  const decodificado = decodificarCsv(await file.arrayBuffer());
+  if ("erro" in decodificado) {
+    return fail("validation_failed", decodificado.erro, 422, { requestId });
+  }
+  const text = decodificado.texto;
   const rows = parseCsv(text);
   if (rows.length < 2) {
     return fail("validation_failed", "CSV vazio ou sem linhas de dados.", 422, { requestId });
@@ -170,13 +177,18 @@ export async function POST(req: NextRequest): Promise<Response> {
 
   const existentes = new Set<string>();
   if (phones.length > 0) {
+    const lookup = [...new Set(phones.flatMap((p) => phoneLookupVariants(p)))];
     const { data } = await supabase
       .from("contacts")
       .select("phone_number")
       .eq("organization_id", orgId)
       .not("phone_number", "is", null)
-      .in("phone_number", phones);
-    for (const r of data ?? []) existentes.add(`tel:${(r as { phone_number: string }).phone_number}`);
+      .in("phone_number", lookup);
+    for (const r of data ?? []) {
+      for (const v of phoneLookupVariants((r as { phone_number: string }).phone_number)) {
+        existentes.add(`tel:${v}`);
+      }
+    }
   }
   if (emails.length > 0) {
     const { data } = await supabase
@@ -194,7 +206,10 @@ export async function POST(req: NextRequest): Promise<Response> {
   for (const { linha, contato } of candidatos) {
     const phone = contato.phone_number as string | undefined;
     const email = contato.email as string | undefined;
-    if ((phone && existentes.has(`tel:${phone}`)) || (email && existentes.has(`email:${email.toLowerCase()}`))) {
+    if (
+      (phone && phoneLookupVariants(phone).some((v) => existentes.has(`tel:${v}`))) ||
+      (email && existentes.has(`email:${email.toLowerCase()}`))
+    ) {
       skippedDuplicates += 1;
       continue;
     }

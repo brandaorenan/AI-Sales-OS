@@ -30,6 +30,7 @@ import { ApiError } from "@/lib/api/types";
 import { ROTULO_DO_PASSO } from "@/lib/leads/agent-mapping";
 import { Archive, CaretDown, CaretUp, Plus, Warning } from "@/lib/ui/icons";
 import { SeloDeAutoria } from "@/components/operacao/SeloDeAutoria";
+import { useT } from "@/hooks/i18n/useT";
 
 import { mensagemDeErro } from "./_mapping";
 
@@ -138,8 +139,11 @@ function passoPorEtapa(mapa: MapaDoAgente): Map<string, LeadStage> {
 }
 
 /** "1 negócio", "4 negócios" — a tela recompõe a frase, então pluraliza como o servidor. */
-export function contagemDeNegocios(n: number): string {
-  return `${n} ${n === 1 ? "negócio" : "negócios"}`;
+export function contagemDeNegocios(
+  n: number,
+  t: (texto: string) => string = (texto) => texto,
+): string {
+  return `${n} ${n === 1 ? t("negócio") : t("negócios")}`;
 }
 
 /**
@@ -202,6 +206,7 @@ export function StagesSection({
   /** Para onde mandar quem precisa desfazer o vínculo de uma etapa com o assistente. */
   ancoraMapeamento: string;
 }) {
+  const t = useT();
   const consulta = useAgentMapping(pipelineId);
   const criar = useCriarEtapa(pipelineId);
   const editar = useEditarEtapa(pipelineId);
@@ -220,14 +225,14 @@ export function StagesSection({
   if (consulta.isError) {
     return (
       <p className="text-sm text-text-muted" data-testid="etapas-erro-leitura">
-        Não foi possível carregar as etapas deste funil agora. Recarregue a página.
+        {t("Não foi possível carregar as etapas deste funil agora. Recarregue a página.")}
       </p>
     );
   }
   if (!consulta.data) {
     return (
       <p className="text-sm text-text-muted" data-testid="etapas-carregando">
-        Carregando as etapas deste funil…
+        {t("Carregando as etapas deste funil…")}
       </p>
     );
   }
@@ -249,8 +254,8 @@ export function StagesSection({
     editar.mutate(
       { stageId: etapaId, patch },
       {
-        onSuccess: () => toast.success("Etapa atualizada."),
-        onError: (e) => setErro({ etapaId, texto: mensagemDeErro(e), sobrePapel }),
+        onSuccess: () => toast.success(t("Etapa atualizada.")),
+        onError: (e) => setErro({ etapaId, texto: mensagemDeErro(e, t), sobrePapel }),
       },
     );
   }
@@ -270,8 +275,8 @@ export function StagesSection({
         papel,
         texto:
           papel === "won"
-            ? `Só uma etapa pode ser a de fechamento. Marcar esta desmarca «${atual.name}».`
-            : `Só uma etapa pode ser a de perda. Marcar esta desmarca «${atual.name}».`,
+            ? `${t("Só uma etapa pode ser a de fechamento. Marcar esta desmarca")} «${atual.name}».`
+            : `${t("Só uma etapa pode ser a de perda. Marcar esta desmarca")} «${atual.name}».`,
       });
       return;
     }
@@ -285,7 +290,7 @@ export function StagesSection({
       {
         onSuccess: () => {
           setArquivamento(null);
-          toast.success(`«${etapa.name}» saiu do quadro.`);
+          toast.success(`«${etapa.name}» ${t("saiu do quadro.")}`);
         },
         onError: (e) => {
           // Negócios parados na etapa não é recusa final: é a pergunta "para
@@ -296,7 +301,7 @@ export function StagesSection({
             etapaId: etapa.id,
             negocios: caso.negocios,
             destino: null,
-            erro: caso.precisaDestino ? null : mensagemDeErro(e),
+            erro: caso.precisaDestino ? null : mensagemDeErro(e, t),
           });
         },
       },
@@ -310,24 +315,27 @@ export function StagesSection({
     criar.mutate(nome, {
       onSuccess: () => {
         setNova(null);
-        toast.success(`«${nome}» entrou no fim do funil.`);
+        toast.success(`«${nome}» ${t("entrou no fim do funil.")}`);
       },
-      onError: (e) => setErro({ etapaId: null, texto: mensagemDeErro(e) }),
+      onError: (e) => setErro({ etapaId: null, texto: mensagemDeErro(e, t) }),
     });
   }
 
   return (
     <div className="space-y-4" id={ancoraDasEtapas(pipelineId)} data-testid={`etapas-${pipelineId}`}>
       <div className="space-y-1">
-        <h3 className="text-sm font-semibold">Etapas deste funil</h3>
+        <h3 className="text-sm font-semibold">{t("Etapas deste funil")}</h3>
         <p className="max-w-3xl text-sm leading-relaxed text-text-muted">
-          Estas são as colunas do seu quadro, na ordem em que o cliente avança. Você pode
-          renomear, criar, reordenar e arquivar.
+          {t(
+            "Estas são as colunas do seu quadro, na ordem em que o cliente avança. Você pode renomear, criar, reordenar e arquivar.",
+          )}
         </p>
         <p className="max-w-3xl text-sm leading-relaxed text-text-muted">
-          Duas colunas têm papel especial: a <strong>de fechamento</strong> é onde o negócio
-          vira venda, e a <strong>de perda</strong> é onde ele se perde. Cada funil precisa de uma
-          de cada — por isso a marcação se muda de lugar, não se apaga.
+          {t("Duas colunas têm papel especial: a")} <strong>{t("de fechamento")}</strong>{" "}
+          {t("é onde o negócio vira venda, e a")} <strong>{t("de perda")}</strong>{" "}
+          {t(
+            "é onde ele se perde. Cada funil precisa de uma de cada — por isso a marcação se muda de lugar, não se apaga.",
+          )}
         </p>
       </div>
 
@@ -346,9 +354,9 @@ export function StagesSection({
         data-testid="etapas-cabecalho"
       >
         <span className="w-6 shrink-0" />
-        <span className="min-w-0 flex-1">{ROTULO.nome}</span>
-        <span className={`${LARGURA.ordem} shrink-0 text-center`}>{ROTULO.ordem}</span>
-        <span className={`${LARGURA.papel} shrink-0`}>{ROTULO.papel}</span>
+        <span className="min-w-0 flex-1">{t(ROTULO.nome)}</span>
+        <span className={`${LARGURA.ordem} shrink-0 text-center`}>{t(ROTULO.ordem)}</span>
+        <span className={`${LARGURA.papel} shrink-0`}>{t(ROTULO.papel)}</span>
         <span className={`${LARGURA.arquivar} shrink-0`} />
       </div>
 
@@ -375,7 +383,7 @@ export function StagesSection({
                     vive no cabeçalho — mesmas constantes, `sm:hidden`. */}
                 <div className="min-w-0 flex-1 space-y-1">
                   <span className="block text-xs font-medium text-text-muted sm:hidden">
-                    {ROTULO.nome}
+                    {t(ROTULO.nome)}
                   </span>
                   <NomeDaEtapa
                     etapa={etapa}
@@ -392,13 +400,13 @@ export function StagesSection({
                   className={`flex flex-col gap-1 ${LARGURA.ordem} shrink-0 sm:flex-row sm:items-center sm:justify-center sm:gap-1`}
                 >
                   <span className="text-xs font-medium text-text-muted sm:hidden">
-                    {ROTULO.ordem}
+                    {t(ROTULO.ordem)}
                   </span>
                   <div className="flex items-center gap-1">
                   <Button
                     variant="ghost"
                     size="icon"
-                    aria-label={`Mover «${etapa.name}» uma coluna para trás`}
+                    aria-label={`${t("Mover")} «${etapa.name}» ${t("uma coluna para trás")}`}
                     data-testid={`subir-${etapa.id}`}
                     disabled={i === 0 || ocupado}
                     onClick={() =>
@@ -410,7 +418,7 @@ export function StagesSection({
                   <Button
                     variant="ghost"
                     size="icon"
-                    aria-label={`Mover «${etapa.name}» uma coluna para frente`}
+                    aria-label={`${t("Mover")} «${etapa.name}» ${t("uma coluna para frente")}`}
                     data-testid={`descer-${etapa.id}`}
                     disabled={i === etapas.length - 1 || ocupado}
                     onClick={() =>
@@ -424,7 +432,7 @@ export function StagesSection({
 
                 <div className={`w-full shrink-0 space-y-1 ${LARGURA.papel} sm:space-y-0`}>
                   <span className="block text-xs font-medium text-text-muted sm:hidden">
-                    {ROTULO.papel}
+                    {t(ROTULO.papel)}
                   </span>
                   <Select
                     value={papelDaEtapa(etapa)}
@@ -432,7 +440,7 @@ export function StagesSection({
                     disabled={ocupado}
                   >
                     <SelectTrigger
-                      aria-label={`Papel de «${etapa.name}» no funil`}
+                      aria-label={`${t("Papel de")} «${etapa.name}» ${t("no funil")}`}
                       data-testid={`papel-${etapa.id}`}
                     >
                       <SelectValue />
@@ -440,7 +448,7 @@ export function StagesSection({
                     <SelectContent>
                       {(["nenhum", "won", "lost"] as const).map((p) => (
                         <SelectItem key={p} value={p}>
-                          {ROTULO_DO_PAPEL[p]}
+                          {t(ROTULO_DO_PAPEL[p])}
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -459,7 +467,7 @@ export function StagesSection({
                   }}
                 >
                   <Archive size={16} className="mr-1" aria-hidden />
-                  Arquivar
+                  {t("Arquivar")}
                 </Button>
               </div>
 
@@ -474,9 +482,9 @@ export function StagesSection({
 
               {passo && (
                 <p className="text-xs text-text-muted" data-testid={`passo-de-${etapa.id}`}>
-                  O assistente usa esta etapa para «{ROTULO_DO_PASSO[passo]}».{" "}
+                  {t("O assistente usa esta etapa para")} «{t(ROTULO_DO_PASSO[passo])}».{" "}
                   <a className="underline underline-offset-2" href={`#${ancoraMapeamento}`}>
-                    Mudar isso
+                    {t("Mudar isso")}
                   </a>
                 </p>
               )}
@@ -505,10 +513,10 @@ export function StagesSection({
                       data-testid={`confirmar-papel-sim-${etapa.id}`}
                       onClick={() => aplicar(etapa.id, patchDePapel(etapa, confirmandoAqui.papel))}
                     >
-                      Marcar mesmo assim
+                      {t("Marcar mesmo assim")}
                     </Button>
                     <Button size="sm" variant="ghost" onClick={() => setConfirmacao(null)}>
-                      Cancelar
+                      {t("Cancelar")}
                     </Button>
                   </div>
                 </Card>
@@ -525,23 +533,31 @@ export function StagesSection({
                     </p>
                   ) : arquivandoAqui.negocios === null ? (
                     <p className="text-sm leading-relaxed">
-                      Arquivar «{etapa.name}»? A coluna sai do quadro e para de receber negócios
-                      novos. Nada é apagado — o histórico de quem passou por ela continua
-                      guardado —, mas <strong>não dá para trazer a coluna de volta por aqui</strong>.
+                      {t("Arquivar")} «{etapa.name}»?{" "}
+                      {t(
+                        "A coluna sai do quadro e para de receber negócios novos. Nada é apagado — o histórico de quem passou por ela continua guardado —, mas",
+                      )}{" "}
+                      <strong>{t("não dá para trazer a coluna de volta por aqui")}</strong>.
                     </p>
                   ) : destinos.length === 0 ? (
                     // Sem destino possível não há pergunta a fazer — e mandar
                     // escolher entre nada seria um beco sem saída.
                     <p className="text-sm leading-relaxed" data-testid={`arquivar-sem-destino-${etapa.id}`}>
-                      {contagemDeNegocios(arquivandoAqui.negocios)} {arquivandoAqui.negocios === 1 ? "está" : "estão"} nesta
-                      etapa e não há outra coluna em aberto para recebê-{arquivandoAqui.negocios === 1 ? "lo" : "los"}. Crie
-                      uma etapa antes de arquivar «{etapa.name}».
+                      {contagemDeNegocios(arquivandoAqui.negocios, t)}{" "}
+                      {arquivandoAqui.negocios === 1
+                        ? t("está nesta etapa e não há outra coluna em aberto para recebê-lo.")
+                        : t(
+                            "estão nesta etapa e não há outra coluna em aberto para recebê-los.",
+                          )}{" "}
+                      {t("Crie uma etapa antes de arquivar")} «{etapa.name}».
                     </p>
                   ) : (
                     <>
                       <p className="text-sm leading-relaxed" data-testid={`arquivar-pergunta-${etapa.id}`}>
-                        {contagemDeNegocios(arquivandoAqui.negocios)}{" "}
-                        {arquivandoAqui.negocios === 1 ? "está nesta etapa. Para onde ele vai?" : "estão nesta etapa. Para onde eles vão?"}
+                        {contagemDeNegocios(arquivandoAqui.negocios, t)}{" "}
+                        {arquivandoAqui.negocios === 1
+                          ? t("está nesta etapa. Para onde ele vai?")
+                          : t("estão nesta etapa. Para onde eles vão?")}
                       </p>
                       <div className="sm:w-72">
                         <Select
@@ -551,10 +567,10 @@ export function StagesSection({
                           }
                         >
                           <SelectTrigger
-                            aria-label={`Para onde vão os negócios de «${etapa.name}»`}
+                            aria-label={`${t("Para onde vão os negócios de")} «${etapa.name}»`}
                             data-testid={`destino-${etapa.id}`}
                           >
-                            <SelectValue placeholder="Escolha a etapa" />
+                            <SelectValue placeholder={t("Escolha a etapa")} />
                           </SelectTrigger>
                           <SelectContent>
                             {destinos.map((d) => (
@@ -582,11 +598,12 @@ export function StagesSection({
                       className="text-sm leading-relaxed text-warning-fg"
                       data-testid={`arquivar-perde-passo-${etapa.id}`}
                     >
-                      Esta etapa é a que o assistente usa para «{ROTULO_DO_PASSO[passo]}».
-                      Arquivando, ele para de mover o card nesse passo até você escolher outra
-                      etapa em{" "}
+                      {t("Esta etapa é a que o assistente usa para")} «{t(ROTULO_DO_PASSO[passo])}».{" "}
+                      {t(
+                        "Arquivando, ele para de mover o card nesse passo até você escolher outra etapa em",
+                      )}{" "}
                       <a className="underline underline-offset-2" href={`#${ancoraMapeamento}`}>
-                        «Para onde o card vai em cada passo»
+                        «{t("Para onde o card vai em cada passo")}»
                       </a>
                       .
                     </p>
@@ -607,12 +624,12 @@ export function StagesSection({
                         onClick={() => pedirArquivamento(etapa, arquivandoAqui.destino)}
                       >
                         {arquivandoAqui.negocios === null
-                          ? "Arquivar"
-                          : "Mover os negócios e arquivar"}
+                          ? t("Arquivar")
+                          : t("Mover os negócios e arquivar")}
                       </Button>
                     )}
                     <Button size="sm" variant="ghost" onClick={() => setArquivamento(null)}>
-                      {arquivandoAqui.erro ? "Fechar" : "Cancelar"}
+                      {arquivandoAqui.erro ? t("Fechar") : t("Cancelar")}
                     </Button>
                   </div>
                 </Card>
@@ -630,7 +647,7 @@ export function StagesSection({
                       <>
                         {" "}
                         <a className="underline underline-offset-2" href={`#${ancoraMapeamento}`}>
-                          Ir para o mapeamento do assistente
+                          {t("Ir para o mapeamento do assistente")}
                         </a>
                         .
                       </>
@@ -646,7 +663,7 @@ export function StagesSection({
       {nova === null ? (
         <Button variant="ghost" size="sm" data-testid="nova-etapa" onClick={() => setNova("")}>
           <Plus size={16} className="mr-1" aria-hidden />
-          Acrescentar etapa ao fim
+          {t("Acrescentar etapa ao fim")}
         </Button>
       ) : (
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
@@ -654,8 +671,8 @@ export function StagesSection({
             autoFocus
             value={nova}
             maxLength={80}
-            placeholder="Nome da nova coluna"
-            aria-label="Nome da nova etapa"
+            placeholder={t("Nome da nova coluna")}
+            aria-label={t("Nome da nova etapa")}
             data-testid="nova-etapa-nome"
             onChange={(e) => setNova(e.target.value)}
             onKeyDown={(e) => {
@@ -670,10 +687,10 @@ export function StagesSection({
             disabled={ocupado || nova.trim().length === 0}
             onClick={criarEtapa}
           >
-            Criar
+            {t("Criar")}
           </Button>
           <Button size="sm" variant="ghost" onClick={() => setNova(null)}>
-            Cancelar
+            {t("Cancelar")}
           </Button>
         </div>
       )}
@@ -710,6 +727,7 @@ function NomeDaEtapa({
   desabilitado: boolean;
   aoConfirmar: (nome: string) => void;
 }) {
+  const t = useT();
   const [rascunho, setRascunho] = useState(etapa.name);
 
   function confirmar() {
@@ -726,7 +744,7 @@ function NomeDaEtapa({
       value={rascunho}
       maxLength={80}
       disabled={desabilitado}
-      aria-label={`Nome da etapa «${etapa.name}»`}
+      aria-label={`${t("Nome da etapa")} «${etapa.name}»`}
       data-testid={`nome-${etapa.id}`}
       onChange={(e) => setRascunho(e.target.value)}
       onBlur={confirmar}
@@ -760,6 +778,7 @@ function PoliticaDeContexto({
   desabilitado: boolean;
   aoAlterar: (patch: PatchDeEtapa) => void;
 }) {
+  const t = useT();
   const [dias, setDias] = useState(String(etapa.context_reset_after_days));
 
   // Reflete o que o servidor tem quando outra edição desta etapa recarrega a
@@ -783,30 +802,31 @@ function PoliticaDeContexto({
       className="flex flex-col gap-3 border-border p-4"
       data-testid={`politica-contexto-${etapa.id}`}
     >
-      <p className="text-sm font-medium">Recomeçar o atendimento nesta etapa</p>
+      <p className="text-sm font-medium">{t("Recomeçar o atendimento nesta etapa")}</p>
 
       <label className="flex items-start gap-3">
         <Switch
           checked={etapa.resets_context}
           disabled={desabilitado}
-          aria-label={`Quando o negócio chegar em «${etapa.name}», a IA recomeça do zero`}
+          aria-label={`${t("Quando o negócio chegar em")} «${etapa.name}», ${t("a IA recomeça do zero")}`}
           data-testid={`resets-context-${etapa.id}`}
           onCheckedChange={(v) => aoAlterar({ resets_context: v })}
         />
         <span className="space-y-0.5">
           <span className="block text-sm leading-relaxed">
-            Quando o negócio chegar aqui, a IA recomeça do zero
+            {t("Quando o negócio chegar aqui, a IA recomeça do zero")}
           </span>
           <span className="block text-xs italic text-muted-foreground">
-            A IA esquece o que foi conversado, mas continua sabendo quem é o cliente e o que ele
-            já comprou. O histórico completo continua visível para a sua equipe.
+            {t(
+              "A IA esquece o que foi conversado, mas continua sabendo quem é o cliente e o que ele já comprou. O histórico completo continua visível para a sua equipe.",
+            )}
           </span>
         </span>
       </label>
 
       <div className="space-y-1">
         <div className="flex items-center gap-2 text-sm">
-          <label htmlFor={`dias-contexto-${etapa.id}`}>Esperar</label>
+          <label htmlFor={`dias-contexto-${etapa.id}`}>{t("Esperar")}</label>
           <Input
             id={`dias-contexto-${etapa.id}`}
             type="number"
@@ -814,7 +834,7 @@ function PoliticaDeContexto({
             max={365}
             value={dias}
             disabled={desabilitado}
-            aria-label={`Dias de carência antes de recomeçar em «${etapa.name}»`}
+            aria-label={`${t("Dias de carência antes de recomeçar em")} «${etapa.name}»`}
             data-testid={`dias-contexto-${etapa.id}`}
             onChange={(e) => setDias(e.target.value)}
             onBlur={confirmarDias}
@@ -827,11 +847,12 @@ function PoliticaDeContexto({
             }}
             className="w-20"
           />
-          <span>dias antes de recomeçar</span>
+          <span>{t("dias antes de recomeçar")}</span>
         </div>
         <p className="text-xs italic text-muted-foreground">
-          Tempo para o pós-venda acontecer. Se o cliente voltar antes disso, a IA ainda lembra da
-          conversa.
+          {t(
+            "Tempo para o pós-venda acontecer. Se o cliente voltar antes disso, a IA ainda lembra da conversa.",
+          )}
         </p>
       </div>
     </Card>

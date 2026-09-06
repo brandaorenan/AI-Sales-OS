@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 
+import { useT } from "@/hooks/i18n/useT";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -17,6 +18,7 @@ import {
  * Mensagens do mesmo contato dentro da janela viram uma resposta só.
  */
 export function InboundDebounceCard() {
+  const t = useT();
   const { data, isLoading, isError } = useInboundDebounce();
   const update = useUpdateInboundDebounce();
   const [enabled, setEnabled] = useState(true);
@@ -30,13 +32,13 @@ export function InboundDebounceCard() {
 
   if (isLoading) {
     return (
-      <Card className="p-6 text-sm text-muted-foreground">Carregando…</Card>
+      <Card className="p-6 text-sm text-muted-foreground">{t("Carregando…")}</Card>
     );
   }
   if (isError || !data) {
     return (
       <Card className="p-6 text-sm text-muted-foreground">
-        Não foi possível carregar a configuração de rajada.
+        {t("Não foi possível carregar a configuração de rajada.")}
       </Card>
     );
   }
@@ -47,16 +49,17 @@ export function InboundDebounceCard() {
   return (
     <Card className="max-w-xl space-y-5 p-6">
       <div>
-        <h2 className="text-base font-medium">Agrupar mensagens em rajada</h2>
+        <h2 className="text-base font-medium">{t("Agrupar mensagens em rajada")}</h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          Mensagens do mesmo contato dentro desta janela viram uma única resposta
-          do agente — evita responder no meio de uma sequência no WhatsApp.
+          {t(
+            "Mensagens do mesmo contato dentro desta janela viram uma única resposta do agente — evita responder no meio de uma sequência no WhatsApp.",
+          )}
         </p>
       </div>
 
       <div className="flex items-center justify-between gap-4">
         <Label htmlFor="inbound-debounce-enabled" className="cursor-pointer">
-          Ativar agrupamento
+          {t("Ativar agrupamento")}
         </Label>
         <Switch
           id="inbound-debounce-enabled"
@@ -67,7 +70,7 @@ export function InboundDebounceCard() {
       </div>
 
       <div className="space-y-2">
-        <Label htmlFor="inbound-debounce-seconds">Segundos de espera</Label>
+        <Label htmlFor="inbound-debounce-seconds">{t("Segundos de espera")}</Label>
         <Input
           id="inbound-debounce-seconds"
           type="number"
@@ -83,7 +86,7 @@ export function InboundDebounceCard() {
           }}
         />
         <p className="text-xs text-muted-foreground">
-          Entre 0 e 30 segundos. Desligado = responde na hora.
+          {t("Entre 0 e 30 segundos. Desligado = responde na hora.")}
         </p>
       </div>
 
@@ -98,7 +101,7 @@ export function InboundDebounceCard() {
             })
           }
         >
-          {update.isPending ? "Salvando…" : "Salvar"}
+          {update.isPending ? t("Salvando…") : t("Salvar")}
         </Button>
       </div>
     </Card>
