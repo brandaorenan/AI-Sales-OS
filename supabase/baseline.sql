@@ -14495,4 +14495,250 @@ comment on column public.automation_rule_runs.status is
   'adiado = nada chegou ao cliente e ainda pode chegar — a regra espera a janela de envio do '
   'número, ou a mensagem ficou na fila do canal.';
 
+
+-- ---- conector Magento: providers + ledger de operações (migration 0180) ----
+--
+-- `tenant_integrations.provider`/`orders.external_provider` ganham 'magento'.
+-- Aditivo — só alarga o conjunto aceito, nada a corrigir antes. Um bloco por
+-- constraint (lição do #159/0175: N blocos na mesma constraint quebram o
+-- `update.sh` de um clone com vocabulário posterior).
+alter table public.tenant_integrations
+  drop constraint if exists tenant_integrations_provider_check;
+
+alter table public.tenant_integrations
+  add constraint tenant_integrations_provider_check check (provider in (
+    'nuvemshop', 'vtex', 'shopify', 'magento'
+  ));
+
+alter table public.orders
+  drop constraint if exists orders_external_provider_check;
+
+alter table public.orders
+  add constraint orders_external_provider_check check (external_provider in (
+    'nuvemshop', 'vtex', 'shopify', 'magento'
+  ));
+
+-- Ledger de operações comerciais idempotentes (plano seção 9). A Entrega 2 só
+-- grava a tentativa de conexão (`connection_test`); o carrinho (Entrega 5)
+-- reusa esta MESMA tabela, não cria uma nova por operação.
+create table if not exists public.commerce_operations (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete cascade,
+  integration_id uuid not null references public.tenant_integrations(id) on delete cascade,
+  operation text not null,
+  operation_id text not null,
+  input_hash text not null,
+  status text not null default 'pending'
+    check (status in ('pending', 'succeeded', 'failed')),
+  attempt integer not null default 1,
+  result jsonb not null default '{}'::jsonb,
+  remote_correlation_id text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (integration_id, operation, operation_id)
+);
+
+create index if not exists commerce_operations_org_created_idx
+  on public.commerce_operations (organization_id, created_at desc);
+
+drop trigger if exists trg_commerce_operations_updated_at on public.commerce_operations;
+create trigger trg_commerce_operations_updated_at
+  before update on public.commerce_operations
+  for each row execute function public.fn_set_updated_at();
+
+comment on table public.commerce_operations is
+  'Ledger de operações comerciais idempotentes (conexão, e depois carrinho). '
+  'Fonte de verdade do carrinho/pedido continua no provedor (Magento); esta '
+  'tabela só registra a TENTATIVA e o resultado sanitizado.';
+comment on column public.commerce_operations.input_hash is
+  'sha256 do input da operação — nunca o input em si (pode conter segredo).';
+comment on column public.commerce_operations.operation_id is
+  'Chave de idempotência do CHAMADOR (ex.: Idempotency-Key), não gerada aqui.';
+
+alter table public.commerce_operations enable row level security;
+
+drop policy if exists "commerce_operations_select" on public.commerce_operations;
+create policy "commerce_operations_select" on public.commerce_operations
+  for select using (
+    (organization_id in (select public.fn_user_org_ids()))
+    or public.fn_is_platform_admin()
+  );
+
+
+-- ---- catálogo Magento: cache de busca (migration 0181) ----
+--
+-- Cache de catálogo independente de provedor (plano de concierge de compras
+-- §6.2). Magento continua sendo a autoridade de preço/estoque EFETIVOS —
+-- revalidados no provedor antes de confirmar venda; esta tabela é só busca.
+create table if not exists public.commerce_products (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete cascade,
+  integration_id uuid not null references public.tenant_integrations(id) on delete cascade,
+  store_view text not null,
+  external_id text not null,
+  sku text not null,
+  type text not null,
+  name text not null default '',
+  price_cents integer,
+  currency text,
+  status text,
+  visibility text,
+  url_path text,
+  description text,
+  short_description text,
+  category_ids jsonb not null default '[]'::jsonb,
+  sale_unit text,
+  package_size numeric,
+  package_unit text,
+  min_qty numeric,
+  qty_increment numeric,
+  allow_decimal_qty boolean,
+  attributes jsonb not null default '{}'::jsonb,
+  synced_at timestamptz not null default now(),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (organization_id, integration_id, store_view, external_id)
+);
+
+create index if not exists commerce_products_org_idx
+  on public.commerce_products (organization_id, integration_id);
+create index if not exists commerce_products_name_trgm_idx
+  on public.commerce_products using gin (name public.gin_trgm_ops);
+create index if not exists commerce_products_sku_trgm_idx
+  on public.commerce_products using gin (sku public.gin_trgm_ops);
+
+drop trigger if exists trg_commerce_products_updated_at on public.commerce_products;
+create trigger trg_commerce_products_updated_at
+  before update on public.commerce_products
+  for each row execute function public.fn_set_updated_at();
+
+comment on table public.commerce_products is
+  'Cache de catálogo por integração — busca e apresentação. Preço/estoque '
+  'EFETIVOS são revalidados no provedor antes de confirmar seleção/carrinho '
+  '(plano de concierge de compras §6.1); esta tabela nunca decide venda sozinha.';
+comment on column public.commerce_products.attributes is
+  'Atributos extras não modelados em coluna própria — schema flexível, mas '
+  'com colunas dedicadas para o que a jornada de compra usa direto (preço, '
+  'unidade de venda), não um jsonb-lock-in genérico.';
+
+alter table public.commerce_products enable row level security;
+
+drop policy if exists "commerce_products_select" on public.commerce_products;
+create policy "commerce_products_select" on public.commerce_products
+  for select using (
+    (organization_id in (select public.fn_user_org_ids()))
+    or public.fn_is_platform_admin()
+  );
+
+notify pgrst, 'reload schema';
+
+-- ---- carrinho Magento: executor comercial (migration 0182) ----
+--
+-- Entrega 5 do plano de concierge de compras. Magento é a fonte de verdade do
+-- quote; esta tabela é reescrita inteira a cada leitura/mutação (sem revision
+-- dedicada — `updated_at` já serve de marcador de frescor, plano §9 aceita
+-- "revisão OU data").
+create table if not exists public.commerce_carts (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete cascade,
+  integration_id uuid not null references public.tenant_integrations(id) on delete cascade,
+  conversation_id uuid not null references public.conversations(id) on delete cascade,
+  store_view text not null,
+  external_quote_id text not null,
+  status text not null default 'open'
+    check (status in ('open', 'converted', 'expired')),
+  items jsonb not null default '[]'::jsonb,
+  subtotal_cents integer,
+  grand_total_cents integer,
+  currency text,
+  last_synced_at timestamptz not null default now(),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create unique index if not exists commerce_carts_open_per_conversation_idx
+  on public.commerce_carts (organization_id, integration_id, conversation_id)
+  where status = 'open';
+
+create index if not exists commerce_carts_conversation_idx
+  on public.commerce_carts (organization_id, conversation_id);
+
+drop trigger if exists trg_commerce_carts_updated_at on public.commerce_carts;
+create trigger trg_commerce_carts_updated_at
+  before update on public.commerce_carts
+  for each row execute function public.fn_set_updated_at();
+
+comment on table public.commerce_carts is
+  'Cache de leitura do quote Magento por conversa. Fonte de verdade dos itens '
+  'e do total é sempre o Magento (plano de concierge de compras §5.3); esta '
+  'tabela é reescrita inteira a cada mutação/leitura, nunca a origem da soma.';
+
+alter table public.commerce_carts enable row level security;
+
+drop policy if exists "commerce_carts_select" on public.commerce_carts;
+create policy "commerce_carts_select" on public.commerce_carts
+  for select using (
+    (organization_id in (select public.fn_user_org_ids()))
+    or public.fn_is_platform_admin()
+  );
+
+comment on column public.tenant_integrations.oauth_refresh_token_encrypted is
+  'OAuth refresh token (Nuvemshop/Shopify/VTEX). Para provider=magento, reusada '
+  '(DIRC: Integrar) para o secret OPCIONAL do módulo Deskcomm_Concierge — '
+  'só necessário se o operador instalou o módulo de recuperação de carrinho '
+  '(plano de concierge de compras §5.2); ausente = commerce_create_checkout_link recusa.';
+
+notify pgrst, 'reload schema';
+
+-- ---- handoff entre agentes de IA (migration 0183) ----
+--
+-- Entrega 6 do plano de concierge de compras Magento. `conversations.active_ai_agent_id`
+-- já existe (dump acima) e continua sendo a posse; este bloco acrescenta o
+-- registro auditável da transferência e o campo de destinos permitidos.
+alter table public.ai_agent_versions
+  add column if not exists handoff_targets uuid[] not null default '{}'::uuid[];
+
+comment on column public.ai_agent_versions.handoff_targets is
+  'ai_agents.id (mesmo tenant) para os quais request_agent_handoff pode transferir '
+  'a partir desta versão. Vazio = nenhuma transferência explícita habilitada.';
+
+create table if not exists public.ai_agent_handoffs (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete cascade,
+  conversation_id uuid not null references public.conversations(id) on delete cascade,
+  from_agent_id uuid references public.ai_agents(id) on delete set null,
+  from_version_id uuid references public.ai_agent_versions(id) on delete set null,
+  to_agent_id uuid not null references public.ai_agents(id) on delete cascade,
+  to_version_id uuid not null references public.ai_agent_versions(id) on delete cascade,
+  reason text not null,
+  summary text not null,
+  chain_position integer not null default 1,
+  status text not null default 'requested'
+    check (status in ('requested', 'completed', 'failed')),
+  dedupe_key text not null,
+  created_at timestamptz not null default now(),
+  resolved_at timestamptz,
+  unique (conversation_id, dedupe_key)
+);
+
+create index if not exists ai_agent_handoffs_conversation_idx
+  on public.ai_agent_handoffs (conversation_id, created_at desc);
+
+comment on table public.ai_agent_handoffs is
+  'Registro de transferência de posse da conversa entre agentes de IA (plano de '
+  'concierge de compras §8). A posse em si é conversations.active_ai_agent_id — '
+  'esta tabela é o histórico auditável e a base do limite de cadeia/detecção de ping-pong.';
+comment on column public.ai_agent_handoffs.chain_position is
+  'Posição na cadeia de transferências desta conversa (1 = primeira) — usado '
+  'para recusar cadeias longas demais sem progresso (plano §8.3).';
+
+alter table public.ai_agent_handoffs enable row level security;
+
+drop policy if exists "ai_agent_handoffs_select" on public.ai_agent_handoffs;
+create policy "ai_agent_handoffs_select" on public.ai_agent_handoffs
+  for select using (
+    (organization_id in (select public.fn_user_org_ids()))
+    or public.fn_is_platform_admin()
+  );
+
 notify pgrst, 'reload schema';

@@ -348,6 +348,15 @@ export const AUDIT_ACTIONS = [
   // demais para a chamada seguinte do expurgo alcançar — a trilha registra
   // a própria erosão em vez de encolher sem deixar marca.
   "retention.sweep_run",
+
+  // Conector Magento (Entrega 2 do plano de concierge de compras). Credencial
+  // validada contra a loja ANTES de gravar (mesmo padrão do canal oficial
+  // WhatsApp) — por isso existe também `connect_failed`: é o operador colando
+  // algo que a loja recusou, não um erro nosso.
+  "magento.connected",
+  "magento.connect_failed",
+  "magento.disconnected",
+  "magento.catalog_synced",
 ] as const;
 
 /** Um código de auditoria. Derivado de `AUDIT_ACTIONS` — não redigite a lista. */

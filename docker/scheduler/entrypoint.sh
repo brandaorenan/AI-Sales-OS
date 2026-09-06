@@ -58,6 +58,7 @@ CRONS="
 0 12 * * *|60|api/v1/cron/lgpd-sla-watcher
 30 3 * * *|120|api/v1/cron/kb-conversations-batch
 15 4 * * *|60|api/v1/cron/sync-model-catalog
+0 */8 * * *|120|api/v1/cron/sync-magento-catalog
 40 4 * * *|120|api/v1/cron/data-retention
 * * * * *|60|api/v1/cron/event-log-stale-watcher
 0 * * * *|60|api/v1/cron/context-lifecycle-watcher

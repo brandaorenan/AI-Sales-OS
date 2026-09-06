@@ -28,6 +28,16 @@ export const TOOLS_COMERCIO = declararTools([
     pacotes: ["vender", "atender"],
   },
   {
+    name: "commerce_search_products",
+    category: "read",
+    rotulo: "Procurar produto no catálogo Magento",
+    explicacao:
+      "Procura um produto pelo nome ou SKU no catálogo importado do Magento. Não confirma preço nem estoque — é busca, a confirmação vem depois, direto da loja.",
+    oQueToca: "Catálogo Magento",
+    risco: "seguro",
+    pacotes: ["vender", "atender"],
+  },
+  {
     name: "crm_list_privacy_requests",
     category: "read",
     rotulo: "Ver pedidos de privacidade",

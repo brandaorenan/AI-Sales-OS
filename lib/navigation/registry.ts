@@ -32,6 +32,7 @@ import {
   ShieldCheck,
   Signpost,
   Storefront,
+  ShoppingCart,
   UserCircle,
   Users,
   UsersThree,
@@ -383,6 +384,15 @@ export const NAV_DESTINATIONS: NavDestination[] = [
     group: "canais",
     // A página não filtra por papel, mas as Server Actions de conectar e
     // desconectar exigem admin — mostrar a um viewer seria oferecer botão morto.
+    minRole: "admin",
+    sidebar: true,
+  },
+  {
+    href: "/app/integrations/magento",
+    label: "Magento",
+    description: "Conecte a loja Magento/OpenMage para o concierge de compras recomendar produtos e montar carrinho.",
+    icon: ShoppingCart,
+    group: "canais",
     minRole: "admin",
     sidebar: true,
   },

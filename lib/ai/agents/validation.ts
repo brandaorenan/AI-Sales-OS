@@ -110,6 +110,12 @@ const versionShapeSchema = z
       .max(20)
       .default(["falar com humano", "atendente", "pessoa real"]),
     handoff_tool_enabled: z.boolean().default(true),
+    // Entrega 6 do plano de concierge de compras Magento (handoff IA → IA):
+    // destinos PERMITIDOS para request_agent_handoff — ai_agents.id de outros
+    // agentes publicados do MESMO tenant. Vazio = nenhuma transferência
+    // explícita habilitada (direção segura; sem UI dedicada ainda, configura-se
+    // por esta mesma rota — ver plano §10, item deferido).
+    handoff_targets: z.array(UUID).max(10).default([]),
     cases_enabled: z.boolean().default(false),
     // Onda 4 — quebra a resposta em bolhas curtas (splitIntoBubbles) espaçadas
     // pelo pacing anti-ban. Defaults espelham a migration 0059.

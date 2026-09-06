@@ -889,3 +889,90 @@ Toda spec que usa o helper sobe o teto (240 s em quatro delas, 90 s em uma) —
 isso não está escrito em lugar nenhum, e quem adota o helper sem subir o teto vê
 dois testes alheios estourarem sem call log de locator. Se você for adotar o
 helper numa spec nova: `test.describe.configure({ timeout: 120_000 })`.
+
+## J11 — Conectar Magento pela tela `[P1]` (Entrega 2 do plano de concierge de compras)
+
+**Estado: PASS**, medido a olho (chrome-devtools MCP, não Playwright — sem spec
+permanente ainda) em ambiente fresco: `supabase/baseline.sql` num Supabase local
+pg17, `bootstrap-owner.ts`, `next build && next start`. Evidência em
+`evidence/magento/magento-integracao-tela-inicial.png` e
+`evidence/magento/magento-integracao-conectado.png`.
+
+| caso | resultado |
+|---|---|
+| Tela nova aparece na navegação (grupo Canais, ao lado de Nuvemshop) | PASS |
+| Admin sem conexão vê o formulário (endpoint + usuário + chave da API) | PASS |
+| Credencial validada contra a loja REAL (`ia.genialiaviamentos.com.br`) antes de gravar | PASS — versão `1.9.4.5` e store view `english` lidos corretamente |
+| Cifra ausente (GUC `app.nuvemshop_oauth_key` não configurada) recusa gravar, com mensagem acionável, não crash | PASS — reproduzido antes de configurar a GUC no ambiente de teste |
+| Após conectar: toast de sucesso, tela mostra versão/store views, sobrevive a reload da página | PASS |
+| Reconectar (mesma tela, "Trocar credencial") atualiza `last_health_check_at` | PASS |
+| Ledger `commerce_operations` grava a tentativa (`operation=connection_test`, `status=succeeded`) | PASS — **bug achado e corrigido nesta rodada**: a rota criava a tabela na migration mas nunca escrevia nela; só apareceu ao medir o banco depois do clique, não no typecheck |
+| `api_audit_log` grava `magento.connected` com `magento_version` no metadata | PASS |
+
+**Achado sobre o ambiente, não sobre o produto:** `supabase start` comum falha
+num banco 100% fresco porque replaya `supabase/migrations/` (cadeia documentada
+como quebrada — ver M1 acima) — teve que subir com `migrations/` temporariamente
+vazio e aplicar só o `baseline.sql`. Esse baseline, por sua vez, não cria as
+extensions (`vector`, `citext`, `pg_trgm`) sozinho — precisou de
+`create extension ... with schema public` manual antes de aplicar. Isso é dívida
+de DX (o contribuidor que só rodar `supabase start` sem saber disso trava), não
+bug funcional; não investiguei se é regressão ou sempre foi assim.
+
+Sem spec Playwright permanente ainda — fica como próximo passo se a tela crescer
+(mutação de credencial, desconectar, etc.).
+
+## J12 — Concierge de compras Magento: catálogo, carrinho e handoff `[P1]` (Entregas 3-6 do mesmo plano)
+
+**Atualização 2026-09-06 (pós-instalação):** o módulo `Deskcomm_Concierge`
+foi instalado na loja real e o mecanismo de link de recuperação foi provado
+**ponta a ponta ao vivo** contra `ia.genialiaviamentos.com.br`: quote
+sintético → `createLink` → link aberto no navegador (com cookies, seguindo
+redirect) → **produto de verdade aparece no carrinho** → reuso do código
+rejeitado (410). Dois bugs reais achados e corrigidos nesse processo (ver
+plano, seção "Progresso — instalação real do módulo"). O que falta abaixo é
+só a METADE WhatsApp→CRM da jornada (que continua coberta só por unidade).
+
+**Estado: NÃO PROVADO visualmente** (na parte que segue). As Entregas 3
+(catálogo), 4 (apresentar
+produto com imagem), 5 (carrinho completo) e 6 (handoff entre agentes) foram
+verificadas por `pnpm typecheck`/`lint`/`test:unit`/`test:db` (todos verdes,
+sem regressão) e por testes de unidade dedicados que exercitam a lógica
+determinística com stubs do Magento e do banco — **não** por uma conversa real
+dirigindo o browser/WhatsApp, que é o padrão que este documento normalmente
+exige antes de "pronto".
+
+Por que ficou assim nesta rodada, com honestidade:
+
+- **Escrita no Magento real fica de fora de propósito.** Criar/mutar quote
+  (`shoppingCartCreate`/`ProductAdd`/`Update`/`Remove`) na loja de referência
+  (`ia.genialiaviamentos.com.br`) grava na MESMA base de produção do cliente —
+  mesma cautela já combinada para a instalação do módulo via FTP (seção 13.0
+  do plano): ação difícil de reverter num site que atende clientes reais, sem
+  confirmação explícita para isto especificamente.
+- **Prova ponta a ponta via WhatsApp exige WAHA real** (número de teste
+  autorizado) e um ambiente fresco completo (Supabase local + `next build &&
+  next start` + bootstrap-owner), que não foi montado nesta continuação de
+  sessão.
+
+O que ESTÁ coberto e onde:
+
+| capacidade | prova | onde |
+|---|---|---|
+| Serialização SOAP do carrinho (forma do XML) | contra o WSDL real da loja (`.context/magento-v2.wsdl`), não contra a loja | `tests/unit/magento-soap-cart.test.ts` |
+| Extração de imagem (`catalogProductAttributeMediaList`) | **contra a loja real** (Entrega 4) | `lib/magento/soap.ts` (comentário de proveniência) |
+| `presentProduct` (valida cache, confirma ao vivo, baixa, sobe no Storage) | stub do Magento + Storage fake | `tests/unit/commerce-present-product.test.ts` |
+| Executor comercial (`lib/commerce/cart.ts`) — criação, reuso, replay de idempotência, quantidade absoluta | stub do Magento + fake Supabase in-memory | `tests/unit/commerce-cart.test.ts` |
+| Handoff IA→IA (`lib/agent-engine/agent/agent-handoff.ts`) — validação, cadeia, ping-pong, efetivação, replay | fake `pg.Pool` + mocks de `loadPublishedAgentConfigById`/`enqueueJob` | `tests/unit/agent-handoff.test.ts` |
+| Turno completo do agente não regrediu com as 6 tools novas | suíte real de invariantes, inclusive `limite-de-envios-por-turno.test.ts` | `pnpm test:db` |
+
+**Não testado nem por unidade:** a execução das 6 tools novas (`commerce_get_cart`,
+`commerce_add_items`, `commerce_update_item`, `commerce_remove_item`,
+`commerce_create_checkout_link`, `request_agent_handoff`) DENTRO de um turno
+simulado via `createInboundTurnHandler` — só a lógica de `lib/commerce/cart.ts`
+e `lib/agent-engine/agent/agent-handoff.ts` isoladas. Padrão de referência para
+fechar essa lacuna: `tests/invariants/limite-de-envios-por-turno.test.ts`.
+
+**Também fora desta rodada:** UI de seleção de `handoff_targets` no editor de
+agentes (hoje só configurável pela API de versões, que já valida o campo);
+painel de compra no Inbox (plano §10); UI de progresso de sincronização do
+catálogo (Entrega 3); instalação do módulo `Deskcomm_Concierge` na loja real.

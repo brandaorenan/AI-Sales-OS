@@ -30,6 +30,8 @@ export interface PublishedAgentConfig {
   historyTokenWindow: number;
   handoffKeywords: string[];
   handoffToolEnabled: boolean;
+  /** Destinos permitidos p/ request_agent_handoff (Entrega 6, handoff IA→IA) — ai_agents.id do MESMO tenant. */
+  handoffTargets: string[];
   splitMessages: boolean;
   splitMaxChars: number;
   /** input multimodal (imagem/áudio/pdf) habilitado no turno (Onda 3). */
@@ -89,6 +91,7 @@ interface Row {
   history_token_window: number;
   handoff_keywords: string[] | null;
   handoff_tool_enabled: boolean;
+  handoff_targets: string[] | null;
   split_messages: boolean;
   split_max_chars: number;
   multimodal_input: boolean;
@@ -117,6 +120,7 @@ const SELECT_AGENT_CONFIG_COLUMNS = `a.id as agent_id,
             v.history_token_window,
             v.handoff_keywords,
             v.handoff_tool_enabled,
+            v.handoff_targets,
             v.split_messages,
             v.split_max_chars,
             v.multimodal_input,
@@ -158,6 +162,9 @@ function mapAgentConfigRow(r: Row): PublishedAgentConfig {
     historyTokenWindow: r.history_token_window,
     handoffKeywords: (r.handoff_keywords ?? []).map((k) => k.toLowerCase().trim()).filter((k) => k !== ''),
     handoffToolEnabled: r.handoff_tool_enabled,
+    // `?? []` cobre o clone sem a migration desta coluna — direção segura é
+    // NENHUM destino permitido, nunca todo mundo por omissão de schema.
+    handoffTargets: r.handoff_targets ?? [],
     splitMessages: r.split_messages,
     splitMaxChars: r.split_max_chars,
     multimodalInput: r.multimodal_input,

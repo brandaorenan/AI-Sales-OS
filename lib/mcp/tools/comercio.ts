@@ -99,3 +99,41 @@ export const crmSearchProducts: McpToolDefinition<typeof produtosInputShape> = {
     };
   },
 };
+
+// ---------------------------------------------------------------------------
+// buscar no catálogo Magento (cache — plano de concierge de compras §6.2)
+// ---------------------------------------------------------------------------
+
+const catalogoInputShape = {
+  termo: z.string().trim().min(2).describe("Parte do nome ou do SKU do produto."),
+  limite: z.number().int().min(1).max(20).optional().default(10),
+};
+
+export const commerceSearchProducts: McpToolDefinition<typeof catalogoInputShape> = {
+  name: "commerce_search_products",
+  description:
+    "Busca no catálogo Magento por nome ou SKU. Devolve identidade, tipo e link do produto — " +
+    "NÃO devolve preço nem disponibilidade confirmados: este é um cache de busca, e o Magento " +
+    "continua sendo a fonte de preço/estoque efetivos. Confirme preço e disponibilidade antes de " +
+    "prometer ao cliente.",
+  inputSchema: catalogoInputShape,
+  category: "read",
+  requiresRole: "agent",
+  requiresScope: "mcp:read",
+  handler: async (input, ctx) => {
+    const termo = input.termo.replace(/[%_]/g, (c) => `\\${c}`);
+    const { data, error } = await ctx.supabase
+      .from("commerce_products")
+      .select("external_id, sku, type, name, url_path, category_ids, store_view")
+      .eq("organization_id", ctx.organizationId)
+      .or(`name.ilike.%${termo}%,sku.ilike.%${termo}%`)
+      .limit(input.limite);
+
+    if (error) throw new Error(`buscar_catalogo_magento_falhou: ${error.message}`);
+
+    return {
+      produtos: data ?? [],
+      ...(data && data.length === 0 ? { aviso: "nada com esse nome/SKU no catálogo importado" } : {}),
+    };
+  },
+};

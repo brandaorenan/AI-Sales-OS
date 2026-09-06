@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<config>
+    <modules>
+        <Deskcomm_Concierge>
+            <active>true</active>
+            <codePool>community</codePool>
+            <depends>
+                <Mage_Core/>
+                <Mage_Checkout/>
+                <Mage_Sales/>
+            </depends>
+        </Deskcomm_Concierge>
+    </modules>
+</config>

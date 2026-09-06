@@ -18,6 +18,7 @@ export {
   Users,
   UsersThree,
   Storefront,
+  ShoppingCart,
   Robot,
   Sparkle,
   ShieldCheck,

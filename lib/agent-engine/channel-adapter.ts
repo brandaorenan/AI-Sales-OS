@@ -36,6 +36,21 @@ export interface ChannelSendInput {
     /** Valor por slot, chaveado por `slotKey` — a mesma chave da tela. */
     values: Record<string, string>;
   };
+  /**
+   * Presente = este envio carrega mídia (ex.: `present_product`, Entrega 4 do
+   * plano de concierge de compras). `body` continua sendo o texto que os
+   * gates de conteúdo avaliaram — vira a LEGENDA da mídia, não desaparece.
+   *
+   * `storagePath` aponta para o bucket privado `whatsapp-media`; o adapter
+   * concreto assina a URL na hora do envio (nunca guarda URL persistida).
+   * Adapter que ignore o campo perde a imagem, não quebra — mas hoje só há um
+   * adapter (WAHA-via-CRM) e ele não ignora.
+   */
+  media?: {
+    storagePath: string;
+    mime: string;
+    filename?: string | null;
+  };
 }
 
 /**

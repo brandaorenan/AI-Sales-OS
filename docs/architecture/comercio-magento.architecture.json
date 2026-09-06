@@ -1,0 +1,103 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Concierge de compras Magento — catálogo, carrinho e handoff entre agentes",
+    "subtitle": "plano docs/superpowers/plans/2026-09-06-magento-concierge-carrinho-handoff.md — Entregas 2 a 6",
+    "output": "comercio-magento.html",
+    "quality_profile": "standard"
+  },
+  "lanes": [
+    { "id": "canal", "label": "WhatsApp" },
+    { "id": "agente", "label": "Turno do agente (harness)" },
+    { "id": "comercio", "label": "Capacidades comerciais" },
+    { "id": "magento", "label": "Magento (loja real)" },
+    { "id": "banco", "label": "Banco" },
+    { "id": "config", "label": "Telas de configuração" }
+  ],
+  "mainPath": [
+    "whatsapp_inbound",
+    "inbound_turn",
+    "commerce_search",
+    "present_product",
+    "commerce_cart_tools",
+    "checkout_link",
+    "magento_module",
+    "request_agent_handoff",
+    "followup_turn_job",
+    "destino_agent",
+    "whatsapp_outbound"
+  ],
+  "nodes": [
+    { "id": "whatsapp_inbound", "lane": "canal", "col": 0, "type": "external", "label": "Cliente no WhatsApp", "sublabel": "mensagem inbound — WAHA" },
+    { "id": "integrations_ui", "lane": "config", "col": 0, "type": "route", "label": "Integrações → Magento", "sublabel": "app/app/integrations/magento — conecta SOAP + secret opcional do módulo" },
+    { "id": "agent_editor_ui", "lane": "config", "col": 0, "type": "route", "label": "Editor de agentes", "sublabel": "app/api/v1/ai/agents/[id]/versions — handoff_targets (sem picker dedicado ainda)" },
+
+    { "id": "inbound_turn", "lane": "agente", "col": 1, "type": "service", "label": "runAgentTurn (inbound_turn)", "sublabel": "lib/agent-engine/agent/inbound-turn.ts" },
+    { "id": "request_agent_handoff", "lane": "agente", "col": 2, "type": "tool", "label": "request_agent_handoff", "sublabel": "tool nativa — valida destino, grava handoff, muda posse" },
+    { "id": "followup_turn_job", "lane": "agente", "col": 3, "type": "service", "label": "job followup_turn (continuação)", "sublabel": "reusado do F3-03 — signal null ⇒ resolver usa STICKY sem reclassificar" },
+    { "id": "destino_agent", "lane": "agente", "col": 4, "type": "service", "label": "Agente destino", "sublabel": "posse nova em conversations.active_ai_agent_id" },
+    { "id": "whatsapp_outbound", "lane": "canal", "col": 4, "type": "external", "label": "Envio governado ao cliente", "sublabel": "runBeforeSend — mesmos gates de send_message" },
+
+    { "id": "commerce_search", "lane": "comercio", "col": 1, "type": "tool", "label": "commerce_search_products", "sublabel": "MCP — lib/mcp/tools/comercio.ts" },
+    { "id": "present_product", "lane": "comercio", "col": 2, "type": "tool", "label": "present_product", "sublabel": "tool nativa — lib/commerce/present-product.ts" },
+    { "id": "commerce_cart_tools", "lane": "comercio", "col": 2, "type": "tool", "label": "commerce_get/add/update/remove_item", "sublabel": "tools nativas — lib/commerce/cart.ts" },
+    { "id": "checkout_link", "lane": "comercio", "col": 3, "type": "tool", "label": "commerce_create_checkout_link", "sublabel": "pede o link de recuperação ao módulo Magento" },
+    { "id": "sync_catalog_cron", "lane": "comercio", "col": 1, "type": "service", "label": "cron sync-magento-catalog", "sublabel": "8/8h — lib/commerce/sync-magento-catalog.ts" },
+
+    { "id": "magento_soap", "lane": "magento", "col": 2, "type": "lib", "label": "lib/magento/soap.ts", "sublabel": "SOAP v2 — catálogo, imagens, carrinho" },
+    { "id": "magento_module", "lane": "magento", "col": 3, "type": "external", "label": "Deskcomm_Concierge", "sublabel": "módulo Magento — link de recuperação (Entrega 1); INSTALAÇÃO na loja real pendente de confirmação" },
+
+    { "id": "tenant_integrations_table", "lane": "banco", "col": 0, "type": "table", "label": "tenant_integrations", "sublabel": "credencial SOAP cifrada + secret opcional do módulo" },
+    { "id": "commerce_products_table", "lane": "banco", "col": 1, "type": "table", "label": "commerce_products", "sublabel": "cache de busca — NUNCA decide preço/estoque sozinho" },
+    { "id": "commerce_carts_table", "lane": "banco", "col": 2, "type": "table", "label": "commerce_carts", "sublabel": "cache de leitura do quote — reescrito a cada mutação" },
+    { "id": "commerce_operations_table", "lane": "banco", "col": 2, "type": "table", "label": "commerce_operations", "sublabel": "ledger de idempotência (conexão + mutações de carrinho)" },
+    { "id": "ai_agent_handoffs_table", "lane": "banco", "col": 3, "type": "table", "label": "ai_agent_handoffs", "sublabel": "registro auditável da transferência + posição na cadeia" },
+    { "id": "conversations_table", "lane": "banco", "col": 3, "type": "table", "label": "conversations.active_ai_agent_id", "sublabel": "posse da conversa — já existia (0085/0116)" }
+  ],
+  "edges": [
+    { "id": "e1", "from": "whatsapp_inbound", "to": "inbound_turn", "label": "mensagem" },
+    { "id": "e2", "from": "inbound_turn", "to": "commerce_search", "label": "busca catálogo" },
+    { "id": "e3", "from": "commerce_search", "to": "commerce_products_table", "label": "SELECT" },
+    { "id": "e4", "from": "sync_catalog_cron", "to": "commerce_products_table", "label": "upsert em lotes" },
+    { "id": "e5", "from": "sync_catalog_cron", "to": "magento_soap", "label": "catalogProductList" },
+    { "id": "e6", "from": "magento_soap", "to": "tenant_integrations_table", "label": "credencial decifrada" },
+    { "id": "e7", "from": "integrations_ui", "to": "tenant_integrations_table", "label": "conecta/valida" },
+    { "id": "e8", "from": "inbound_turn", "to": "present_product", "label": "apresenta produto" },
+    { "id": "e9", "from": "present_product", "to": "commerce_products_table", "label": "valida external_id" },
+    { "id": "e10", "from": "present_product", "to": "magento_soap", "label": "confirma preço/status ao vivo + imagem" },
+    { "id": "e11", "from": "present_product", "to": "whatsapp_outbound", "label": "envia imagem+legenda" },
+    { "id": "e12", "from": "inbound_turn", "to": "commerce_cart_tools", "label": "monta seleção" },
+    { "id": "e13", "from": "commerce_cart_tools", "to": "commerce_products_table", "label": "valida external_id" },
+    { "id": "e14", "from": "commerce_cart_tools", "to": "magento_soap", "label": "shoppingCart*" },
+    { "id": "e15", "from": "commerce_cart_tools", "to": "commerce_carts_table", "label": "snapshot relido" },
+    { "id": "e16", "from": "commerce_cart_tools", "to": "commerce_operations_table", "label": "ledger idempotente" },
+    { "id": "e17", "from": "commerce_cart_tools", "to": "checkout_link", "label": "seleção fechada" },
+    { "id": "e18", "from": "checkout_link", "to": "magento_module", "label": "POST /concierge/index/createLink" },
+    { "id": "e19", "from": "inbound_turn", "to": "request_agent_handoff", "label": "transferir especialista" },
+    { "id": "e20", "from": "agent_editor_ui", "to": "request_agent_handoff", "label": "declara handoff_targets" },
+    { "id": "e21", "from": "request_agent_handoff", "to": "ai_agent_handoffs_table", "label": "registra transferência" },
+    { "id": "e22", "from": "request_agent_handoff", "to": "conversations_table", "label": "muda active_ai_agent_id" },
+    { "id": "e23", "from": "request_agent_handoff", "to": "followup_turn_job", "label": "enfileira continuação" },
+    { "id": "e24", "from": "followup_turn_job", "to": "destino_agent", "label": "sticky sem reclassificar" },
+    { "id": "e25", "from": "destino_agent", "to": "conversations_table", "label": "lê posse/contexto" },
+    { "id": "e26", "from": "destino_agent", "to": "whatsapp_outbound", "label": "continua a conversa" }
+  ],
+  "cards": [
+    {
+      "id": "nao_ligacao_frete",
+      "title": "Não-ligação declarada: frete/orçamento",
+      "body": "commerce_estimate_shipping e commerce_apply_coupon NÃO existem neste mapa — descartados explicitamente pelo dono do produto nesta rodada (plano §13.0 item 3). Não é lacuna esquecida."
+    },
+    {
+      "id": "nao_ligacao_operador",
+      "title": "Não-ligação declarada: papel Operador",
+      "body": "Nenhuma tool comercial tem equivalente no catálogo MCP do Operador (lib/agent-engine/agent/entrega-de-capacidade.ts) — são todas nativas do Conversador, como present_product e request_human_handoff."
+    },
+    {
+      "id": "instalacao_pendente",
+      "title": "magento_module ainda não instalado na loja real",
+      "body": "O código do módulo (magento-module/) está pronto e provado num OpenMage descartável (Entrega 1). Instalar via FTP na loja de produção exige confirmação explícita do dono do produto — ação difícil de reverter num site que atende clientes reais."
+    }
+  ]
+}

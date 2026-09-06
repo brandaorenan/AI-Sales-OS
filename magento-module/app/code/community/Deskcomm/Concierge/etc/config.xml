@@ -1,0 +1,55 @@
+<?xml version="1.0"?>
+<config>
+    <modules>
+        <Deskcomm_Concierge>
+            <version>0.1.0</version>
+        </Deskcomm_Concierge>
+    </modules>
+    <frontend>
+        <routers>
+            <concierge>
+                <use>standard</use>
+                <args>
+                    <module>Deskcomm_Concierge</module>
+                    <frontName>concierge</frontName>
+                </args>
+            </concierge>
+        </routers>
+    </frontend>
+    <global>
+        <models>
+            <deskcomm_concierge>
+                <class>Deskcomm_Concierge_Model</class>
+                <resourceModel>deskcomm_concierge_resource</resourceModel>
+            </deskcomm_concierge>
+            <deskcomm_concierge_resource>
+                <class>Deskcomm_Concierge_Model_Resource</class>
+                <entities>
+                    <recovery>
+                        <table>deskcomm_concierge_cart_recovery</table>
+                    </recovery>
+                </entities>
+            </deskcomm_concierge_resource>
+        </models>
+        <resources>
+            <deskcomm_concierge_setup>
+                <setup>
+                    <module>Deskcomm_Concierge</module>
+                </setup>
+                <connection>
+                    <use>core_setup</use>
+                </connection>
+            </deskcomm_concierge_setup>
+        </resources>
+    </global>
+    <default>
+        <concierge>
+            <general>
+                <!-- PROVA VERTICAL: valor placeholder, TROCAR antes de qualquer uso real.
+                     Produção: mover para credencial cifrada em tenant_integrations (ver plano seção 9). -->
+                <api_secret>changeme-set-a-real-secret</api_secret>
+                <link_ttl_seconds>86400</link_ttl_seconds>
+            </general>
+        </concierge>
+    </default>
+</config>

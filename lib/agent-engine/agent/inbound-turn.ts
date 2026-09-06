@@ -68,6 +68,7 @@ import {
   isLeadInHandoff,
   performHumanHandoff,
 } from './human-handoff';
+import { applyRequestAgentHandoff } from './agent-handoff';
 import { maybeCompact, renderCompactedSummary, trimTranscriptToBudget, type CompactionKnobs } from './compaction';
 import { pruneToolResults, type PruneToolResultsKnobs } from './prune-tool-results';
 import {
@@ -96,6 +97,17 @@ import {
 } from './human-cases';
 import { buildMcpTurnTools } from '../edge/crm/mcp-tools';
 import { cancelPendingCronsForLead } from '../cron/scheduler';
+import { getMagentoIntegration } from '@/lib/commerce/get-magento-integration';
+import { presentProduct, PresentProductError } from '@/lib/commerce/present-product';
+import {
+  getOrCreateCart,
+  addItems as addCommerceCartItems,
+  updateItem as updateCommerceCartItem,
+  removeItem as removeCommerceCartItem,
+  createCheckoutLink,
+  CommerceCartError,
+  type CartSnapshot,
+} from '@/lib/commerce/cart';
 import {
   latestInboundSignal,
   loadSkills,
@@ -129,6 +141,25 @@ import {
 } from '../guardrails/jailbreak/classifier';
 import { camadaLigada, lerCamadasDaOrg } from '../guardrails/camadas-da-org';
 
+/** Projeção pt-br do snapshot de carrinho para o retorno das tools comerciais ao modelo. */
+function projetarCarrinho(carrinho: CartSnapshot) {
+  return {
+    cart_id: carrinho.cartId,
+    status: carrinho.status,
+    itens: carrinho.items.map((it) => ({
+      external_id: it.externalId,
+      sku: it.sku,
+      nome: it.name,
+      qty: it.qty,
+      preco_cents: it.priceCents,
+      subtotal_linha_cents: it.rowTotalCents,
+    })),
+    subtotal_cents: carrinho.subtotalCents,
+    total_cents: carrinho.grandTotalCents,
+    moeda: carrinho.currency,
+  };
+}
+
 /**
  * Superfície ESTÁTICA das tools do agente (description + inputSchema) — parte do
  * prefixo estável de cache (F2-17). Única fonte: o handler monta as tools reais
@@ -146,6 +177,85 @@ export const AGENT_TOOL_DEFS = {
       'Envia UMA mensagem de WhatsApp ao lead desta conversa. É o ÚNICO jeito de falar com o lead; texto fora desta tool nunca é enviado.',
     inputSchema: z.object({
       body: z.string().min(1).describe('corpo da mensagem, em pt-br, pronto para envio'),
+    }),
+  },
+  present_product: {
+    description:
+      'Envia ao lead a imagem de UM produto do catálogo Magento, com legenda. Use external_id de um ' +
+      'resultado real de commerce_search_products NESTA conversa — nunca invente um id. Preço e ' +
+      'disponibilidade são confirmados na hora, direto da loja; se o produto não existir mais ou estiver ' +
+      'desabilitado, a tool recusa e diz o motivo. Conta como envio físico (mesmo teto de send_message).',
+    inputSchema: z.object({
+      external_id: z.string().min(1).describe('product_id do Magento — de um resultado de commerce_search_products'),
+      caption: z.string().min(1).max(1000).describe('legenda da imagem, em pt-br, pronta para envio'),
+    }),
+  },
+  commerce_get_cart: {
+    description:
+      'Lê o carrinho de compras ATUAL desta conversa (Magento). Se não existir ainda, cria um novo ' +
+      'vazio. Devolve cart_id (guarde para as próximas chamadas), itens, subtotal, total e moeda — ' +
+      'sempre lidos ao vivo da loja, nunca estimados. Use antes de dizer o que está no carrinho.',
+    inputSchema: z.object({}),
+  },
+  commerce_add_items: {
+    description:
+      'Adiciona ao carrinho os itens que o cliente ACEITOU (instrução explícita, não sugestão). ' +
+      'external_id de cada item precisa vir de um resultado real de commerce_search_products NESTA ' +
+      'conversa — nunca invente um id. Devolve o carrinho atualizado, sempre relido da loja.',
+    inputSchema: z.object({
+      cart_id: z.string().uuid().describe('cart_id de um commerce_get_cart anterior nesta conversa'),
+      itens: z
+        .array(
+          z.object({
+            external_id: z.string().min(1).describe('product_id do Magento'),
+            qty: z.number().positive().describe('quantidade a adicionar'),
+          }),
+        )
+        .min(1)
+        .max(20),
+    }),
+  },
+  commerce_update_item: {
+    description:
+      'Define a quantidade FINAL desejada de UM item já no carrinho (substitui, não soma). Use quando ' +
+      'o cliente pedir para mudar a quantidade de algo que já está no carrinho.',
+    inputSchema: z.object({
+      cart_id: z.string().uuid(),
+      external_id: z.string().min(1).describe('product_id do Magento da linha a alterar'),
+      qty: z.number().positive().describe('quantidade final desejada (substitui a atual)'),
+    }),
+  },
+  commerce_remove_item: {
+    description: 'Remove UM item do carrinho. Use quando o cliente pedir para tirar algo da seleção.',
+    inputSchema: z.object({
+      cart_id: z.string().uuid(),
+      external_id: z.string().min(1).describe('product_id do Magento da linha a remover'),
+    }),
+  },
+  commerce_create_checkout_link: {
+    description:
+      'Gera um link de UM USO para o cliente abrir o carrinho montado direto no site da loja e concluir ' +
+      'a compra no checkout dela. Só funciona se a loja tiver o módulo de recuperação instalado — se não ' +
+      'tiver, a tool recusa e diz o motivo (não é erro seu). Use quando a seleção estiver fechada.',
+    inputSchema: z.object({
+      cart_id: z.string().uuid(),
+    }),
+  },
+  request_agent_handoff: {
+    description:
+      'Transfere a POSSE desta conversa para OUTRO assistente de IA da mesma organização — não é ' +
+      'humano (isso é request_human_handoff). Use quando a conversa precisa de um especialista ' +
+      'diferente (ex.: fechar seleção de produtos e passar para quem monta carrinho). Só aceita um ' +
+      'destino entre os permitidos para este agente. Depois de transferir, você NÃO fala mais nesta ' +
+      'conversa — encerre o turno imediatamente.',
+    inputSchema: z.object({
+      to_agent_id: z.string().uuid().describe('id de um dos destinos permitidos para este agente'),
+      reason: z.string().min(1).max(500).describe('motivo curto da transferência'),
+      summary: z
+        .string()
+        .min(1)
+        .max(2000)
+        .describe('resumo do que já foi entendido/decidido — o destino não deve repetir perguntas já respondidas'),
     }),
   },
   update_lead_state: {
@@ -2059,6 +2169,321 @@ async function executarTurnoDoAgente(
         }
       },
     }),
+    present_product: tool({
+      ...AGENT_TOOL_DEFS.present_product,
+      execute: async ({ external_id, caption }) => {
+        if (seq >= maxSendsPerTurn) {
+          return {
+            ok: false,
+            error: {
+              code: 'max_sends_per_turn',
+              message:
+                `você já enviou ${seq} mensagens neste turno (teto: ${maxSendsPerTurn}). ` +
+                'NÃO envie mais nada agora — encerre o turno e espere a resposta do lead.',
+            },
+          };
+        }
+        try {
+          const admin = deps.crmCfg.supabase;
+          const integracao = await getMagentoIntegration(admin, tenantId);
+          if (!integracao) {
+            return {
+              ok: false,
+              error: {
+                code: 'magento_nao_conectado',
+                message:
+                  'nenhuma loja Magento conectada nesta organização — não é possível apresentar produto com imagem.',
+              },
+            };
+          }
+          const apresentado = await presentProduct(admin, {
+            organizationId: tenantId,
+            integrationId: integracao.integrationId,
+            conversationId: input.conversationId,
+            storeView: integracao.storeView,
+            config: integracao.config,
+            externalId: external_id,
+          });
+
+          // Mesma cadeia de guardrails de send_message — a legenda é o `body`
+          // que os gates avaliam. ponytail: NÃO reusa o fail-safe de
+          // case_promise/vocabulário-interno de send_message (auto-abre-caso,
+          // retry desarmado) — um veto aqui só volta como erro de ensino.
+          // Legenda de produto raramente contém promessa-de-humano ou termo
+          // interno; upgrade se a medição mostrar o contrário.
+          const hasOpenCase =
+            agentConfig?.casesEnabled === true
+              ? await hasOpenCaseForContact(pool, tenantId, input.conversationId)
+              : false;
+          const chain = await runBeforeSend({
+            pool,
+            log: runLog,
+            tenantId,
+            leadId,
+            jobId: job.id,
+            channelSessionId: input.channelSessionId,
+            body: caption,
+            optedOutThisTurn,
+            crmDailyLimit: null,
+            now: clock(),
+            sleep: deps.sleep,
+            lgpd,
+            casesEnabled: agentConfig?.casesEnabled ?? false,
+            hasOpenCase,
+            openedCaseThisTurn,
+            enforceInternalVocabulary: true,
+            ...(deps.knobs.disclosureMode !== undefined ? { disclosureMode: deps.knobs.disclosureMode } : {}),
+            ...(semanticClassifier !== undefined ? { classifyPromiseSemantic: semanticClassifier } : {}),
+            send: (finalBody: string): Promise<ChannelSendResult> => {
+              seq += 1;
+              return channel.send({
+                tenantId,
+                leadId,
+                jobId: job.id,
+                seq,
+                conversationId: input.conversationId,
+                body: finalBody,
+                media: { storagePath: apresentado.storagePath, mime: apresentado.mime },
+              });
+            },
+          });
+          if (chain.status === 'vetoed') {
+            return { ok: false, error: { code: chain.code, message: chain.message } };
+          }
+          const outcome = chain.outcome;
+          outcomes.push(outcome);
+          switch (outcome.kind) {
+            case 'sent':
+            case 'already_sent':
+              return {
+                ok: true,
+                status: 'enviada',
+                message_id: outcome.messageId,
+                produto: {
+                  nome: apresentado.productName,
+                  preco_cents: apresentado.priceCents,
+                  url: apresentado.productUrl,
+                },
+              };
+            case 'queued':
+              return {
+                ok: true,
+                status: 'aceita_aguardando_canal',
+                message:
+                  'o canal aceitou a mensagem e vai enviá-la quando a sessão voltar — não reenvie.',
+              };
+            case 'blocked':
+              return {
+                ok: false,
+                error: {
+                  code: 'contato_bloqueado',
+                  message:
+                    'o contato optou por não receber mensagens (bloqueio irrevogável) — não envie mais nada e encerre o turno.',
+                },
+              };
+            case 'failed':
+              return {
+                ok: false,
+                error: {
+                  code: 'envio_falhou',
+                  message: 'o canal falhou ao enviar — não tente de novo neste turno; o sistema fará retry.',
+                },
+              };
+            case 'unavailable':
+              noteRunError(
+                new Error(`canal indisponível no envio de produto (${outcome.reason}) — job re-tentado pela fila`),
+              );
+              return {
+                ok: false,
+                error: {
+                  code: 'envio_indisponivel',
+                  message: 'não consegui enviar agora (canal indisponível) — encerre o turno; o sistema re-tentará.',
+                },
+              };
+          }
+        } catch (err) {
+          if (err instanceof PresentProductError) {
+            return { ok: false, error: { code: err.code, message: err.message } };
+          }
+          noteRunError(err instanceof Error ? err : new Error(String(err)));
+          return {
+            ok: false,
+            error: { code: 'internal_error', message: 'erro interno ao apresentar o produto — encerre o turno agora.' },
+          };
+        }
+      },
+    }),
+    commerce_get_cart: tool({
+      ...AGENT_TOOL_DEFS.commerce_get_cart,
+      execute: async () => {
+        try {
+          const admin = deps.crmCfg.supabase;
+          const integracao = await getMagentoIntegration(admin, tenantId);
+          if (!integracao) {
+            return {
+              ok: false,
+              error: { code: 'magento_nao_conectado', message: 'nenhuma loja Magento conectada nesta organização.' },
+            };
+          }
+          const carrinho = await getOrCreateCart(admin, {
+            organizationId: tenantId,
+            integrationId: integracao.integrationId,
+            conversationId: input.conversationId,
+            storeView: integracao.storeView,
+            config: integracao.config,
+            jobId: job.id,
+          });
+          return { ok: true, carrinho: projetarCarrinho(carrinho) };
+        } catch (err) {
+          if (err instanceof CommerceCartError) {
+            return { ok: false, error: { code: err.code, message: err.message } };
+          }
+          noteRunError(err instanceof Error ? err : new Error(String(err)));
+          return { ok: false, error: { code: 'internal_error', message: 'erro interno ao ler o carrinho — encerre o turno agora.' } };
+        }
+      },
+    }),
+    commerce_add_items: tool({
+      ...AGENT_TOOL_DEFS.commerce_add_items,
+      execute: async ({ cart_id, itens }) => {
+        try {
+          const admin = deps.crmCfg.supabase;
+          const integracao = await getMagentoIntegration(admin, tenantId);
+          if (!integracao) {
+            return {
+              ok: false,
+              error: { code: 'magento_nao_conectado', message: 'nenhuma loja Magento conectada nesta organização.' },
+            };
+          }
+          const carrinho = await addCommerceCartItems(
+            admin,
+            {
+              organizationId: tenantId,
+              integrationId: integracao.integrationId,
+              conversationId: input.conversationId,
+              storeView: integracao.storeView,
+              config: integracao.config,
+              jobId: job.id,
+            },
+            cart_id,
+            itens.map((it) => ({ externalId: it.external_id, qty: it.qty })),
+          );
+          return { ok: true, carrinho: projetarCarrinho(carrinho) };
+        } catch (err) {
+          if (err instanceof CommerceCartError) {
+            return { ok: false, error: { code: err.code, message: err.message } };
+          }
+          noteRunError(err instanceof Error ? err : new Error(String(err)));
+          return { ok: false, error: { code: 'internal_error', message: 'erro interno ao incluir itens — encerre o turno agora.' } };
+        }
+      },
+    }),
+    commerce_update_item: tool({
+      ...AGENT_TOOL_DEFS.commerce_update_item,
+      execute: async ({ cart_id, external_id, qty }) => {
+        try {
+          const admin = deps.crmCfg.supabase;
+          const integracao = await getMagentoIntegration(admin, tenantId);
+          if (!integracao) {
+            return {
+              ok: false,
+              error: { code: 'magento_nao_conectado', message: 'nenhuma loja Magento conectada nesta organização.' },
+            };
+          }
+          const carrinho = await updateCommerceCartItem(
+            admin,
+            {
+              organizationId: tenantId,
+              integrationId: integracao.integrationId,
+              conversationId: input.conversationId,
+              storeView: integracao.storeView,
+              config: integracao.config,
+              jobId: job.id,
+            },
+            cart_id,
+            external_id,
+            qty,
+          );
+          return { ok: true, carrinho: projetarCarrinho(carrinho) };
+        } catch (err) {
+          if (err instanceof CommerceCartError) {
+            return { ok: false, error: { code: err.code, message: err.message } };
+          }
+          noteRunError(err instanceof Error ? err : new Error(String(err)));
+          return { ok: false, error: { code: 'internal_error', message: 'erro interno ao alterar quantidade — encerre o turno agora.' } };
+        }
+      },
+    }),
+    commerce_remove_item: tool({
+      ...AGENT_TOOL_DEFS.commerce_remove_item,
+      execute: async ({ cart_id, external_id }) => {
+        try {
+          const admin = deps.crmCfg.supabase;
+          const integracao = await getMagentoIntegration(admin, tenantId);
+          if (!integracao) {
+            return {
+              ok: false,
+              error: { code: 'magento_nao_conectado', message: 'nenhuma loja Magento conectada nesta organização.' },
+            };
+          }
+          const carrinho = await removeCommerceCartItem(
+            admin,
+            {
+              organizationId: tenantId,
+              integrationId: integracao.integrationId,
+              conversationId: input.conversationId,
+              storeView: integracao.storeView,
+              config: integracao.config,
+              jobId: job.id,
+            },
+            cart_id,
+            external_id,
+          );
+          return { ok: true, carrinho: projetarCarrinho(carrinho) };
+        } catch (err) {
+          if (err instanceof CommerceCartError) {
+            return { ok: false, error: { code: err.code, message: err.message } };
+          }
+          noteRunError(err instanceof Error ? err : new Error(String(err)));
+          return { ok: false, error: { code: 'internal_error', message: 'erro interno ao remover item — encerre o turno agora.' } };
+        }
+      },
+    }),
+    commerce_create_checkout_link: tool({
+      ...AGENT_TOOL_DEFS.commerce_create_checkout_link,
+      execute: async ({ cart_id }) => {
+        try {
+          const admin = deps.crmCfg.supabase;
+          const integracao = await getMagentoIntegration(admin, tenantId);
+          if (!integracao) {
+            return {
+              ok: false,
+              error: { code: 'magento_nao_conectado', message: 'nenhuma loja Magento conectada nesta organização.' },
+            };
+          }
+          const link = await createCheckoutLink(
+            admin,
+            {
+              organizationId: tenantId,
+              integrationId: integracao.integrationId,
+              conversationId: input.conversationId,
+              storeView: integracao.storeView,
+              config: integracao.config,
+              jobId: job.id,
+            },
+            cart_id,
+            integracao.moduleSecret,
+          );
+          return { ok: true, url: link.url, expira_em: link.expiresAt };
+        } catch (err) {
+          if (err instanceof CommerceCartError) {
+            return { ok: false, error: { code: err.code, message: err.message } };
+          }
+          noteRunError(err instanceof Error ? err : new Error(String(err)));
+          return { ok: false, error: { code: 'internal_error', message: 'erro interno ao gerar o link — encerre o turno agora.' } };
+        }
+      },
+    }),
     update_lead_state: tool({
       ...AGENT_TOOL_DEFS.update_lead_state,
       execute: async (raw) => {
@@ -2235,6 +2660,36 @@ async function executarTurnoDoAgente(
           return {
             ok: false,
             error: { code: 'internal_error', message: 'erro interno ao agendar o retorno — encerre o turno agora.' },
+          };
+        }
+      },
+    });
+  }
+
+  // Entrega 6 do plano de concierge de compras Magento (handoff IA→IA): só
+  // entra quando a versão publicada tem PELO MENOS um destino permitido — sem
+  // isso a tool seria pura tentação sem capacidade (mesma doutrina de
+  // schedule_followup acima). MUTANTE (grava ai_agent_handoffs + muda posse da
+  // conversa + enfileira continuação), fora de READ_ONLY_TOOLS.
+  if (agentConfig !== null && agentConfig.handoffTargets.length > 0) {
+    rawTools.request_agent_handoff = tool({
+      ...AGENT_TOOL_DEFS.request_agent_handoff,
+      execute: async (raw) => {
+        try {
+          const res = await applyRequestAgentHandoff(
+            pool,
+            { tenantId, conversationId: input.conversationId, leadId, jobId: job.id },
+            { agentConfig },
+            { log: runLog },
+            raw,
+          );
+          if (!res.ok) return res; // erro de ensino (destino inválido/não permitido/cadeia esgotada)
+          return { ok: true, status: res.status, destino: res.destino, message: res.message };
+        } catch (err) {
+          noteRunError(err instanceof Error ? err : new Error(String(err)));
+          return {
+            ok: false,
+            error: { code: 'internal_error', message: 'erro interno ao transferir a conversa — encerre o turno agora.' },
           };
         }
       },
