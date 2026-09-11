@@ -17,7 +17,7 @@
  * um gpt-4o é erro 400 da API, então o gate de família é obrigatório, não
  * cosmético.
  */
-export type EsforcoRaciocinio = 'minimal' | 'low' | 'medium' | 'high';
+export type EsforcoRaciocinio = 'minimal' | 'none' | 'low' | 'medium' | 'high';
 
 const POR_PROPOSITO: Record<string, EsforcoRaciocinio> = {
   // Classificadores: entrada curta, saída enum/JSON pequeno, zero necessidade
@@ -41,14 +41,21 @@ function ehModeloDeRaciocinio(modelId: string): boolean {
 /**
  * o1/o3/o4 aceitam `reasoning_effort`, mas NÃO o valor `minimal` (só
  * low|medium|high) — mandar `minimal` devolve 400 e derruba o turno no
- * caminho crítico (stage/jailbreak rethrow). gpt-5* aceita `minimal`.
+ * caminho crítico (stage/jailbreak rethrow). O `gpt-5` original aceita
+ * `minimal`, mas as sub-versões pontuadas (`gpt-5.4-mini`, `gpt-5.6-terra`,
+ * ...) trocaram esse valor por `none` no enum de `reasoning_effort` — medido
+ * em prod via 400 da OpenAI: "Unsupported value: 'minimal' is not supported
+ * with the 'gpt-5.4-mini' model. Supported values are: 'none', 'low',
+ * 'medium', 'high', and 'xhigh'."
  */
 function esforcoSuportadoPeloModelo(
   modelId: string,
   effort: EsforcoRaciocinio,
 ): EsforcoRaciocinio {
   const id = (modelId ?? '').toLowerCase();
-  if (effort === 'minimal' && /^(o1|o3|o4)/.test(id)) return 'low';
+  if (effort !== 'minimal') return effort;
+  if (/^(o1|o3|o4)/.test(id)) return 'low';
+  if (/^gpt-5\.\d/.test(id)) return 'none';
   return effort;
 }
 
