@@ -43,4 +43,13 @@ describe("esforcoParaChamada", () => {
     // gpt-5* continua com 'minimal' (valor suportado pela família).
     expect(esforcoParaChamada("openai", "gpt-5-mini", "jailbreak_detect")).toBe("minimal");
   });
+
+  it("sub-versões pontuadas de gpt-5 (gpt-5.4-mini, gpt-5.6-terra) trocam 'minimal' por 'none' — 400 real da OpenAI medido em prod", () => {
+    for (const model of ["gpt-5.4-mini", "gpt-5.6-terra"]) {
+      expect(esforcoParaChamada("openai", model, "jailbreak_detect")).toBe("none");
+      expect(esforcoParaChamada("openai", model, "stage_classifier")).toBe("none");
+      // turno em si usa 'low', que já era suportado — não muda.
+      expect(esforcoParaChamada("openai", model, "agent_turn")).toBe("low");
+    }
+  });
 });

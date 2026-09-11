@@ -496,10 +496,11 @@ export async function runModelCall(db: pg.Pool, cfg: LlmEdgeConfig, input: RunMo
 
     const startedAt = Date.now();
     let result: Awaited<ReturnType<typeof generateText>>;
-    try {
-      // `system` aceita SystemModelMessage (com providerOptions de cache) — igual
-      // em v6 e v7 (smoke prova que o cacheControl continua virando cache_control).
-      result = await generateText({
+
+    // `system` aceita SystemModelMessage (com providerOptions de cache) — igual
+    // em v6 e v7 (smoke prova que o cacheControl continua virando cache_control).
+    const chamarModelo = (effort: typeof esforco) =>
+      generateText({
         // `decisao.baseUrl` só é preenchido quando o painel apontou um endpoint
         // (gateway OpenAI-compatível, ou modelo local). Providers canônicos
         // ignoram o terceiro argumento e vão ao endpoint intrínseco.
@@ -512,23 +513,18 @@ export async function runModelCall(db: pg.Pool, cfg: LlmEdgeConfig, input: RunMo
         topP,
         topK,
         maxOutputTokens,
-        ...(esforco !== undefined
-          ? { providerOptions: { openai: { reasoningEffort: esforco } } }
-          : {}),
+        ...(effort !== undefined ? { providerOptions: { openai: { reasoningEffort: effort } } } : {}),
       });
-    } catch (err) {
-      // ─── A LINHA QUE FALTAVA ────────────────────────────────────────────────
-      //
-      // Até aqui o INSERT em llm_calls vivia só DEPOIS desta chamada, sem `try`
-      // em volta. Provedor recusou a chave, modelo não existe, conta sem saldo? A
-      // exceção subia e NADA ficava gravado. A tabela que deveria explicar era
-      // justamente a que ficava vazia no caso que precisa de explicação — e é a
-      // causa direta de "o agente não responde e não aparece erro em lugar
-      // nenhum".
-      //
-      // Grava e RELANÇA: quem chama continua decidindo o que fazer com a falha
-      // (o worker reagenda, o dry-run mostra na tela). Engolir aqui trocaria uma
-      // falha invisível por uma silenciosa, que é pior.
+
+    // ─── A LINHA QUE FALTAVA ──────────────────────────────────────────────────
+    //
+    // Até aqui o INSERT em llm_calls vivia só DEPOIS desta chamada, sem `try`
+    // em volta. Provedor recusou a chave, modelo não existe, conta sem saldo? A
+    // exceção subia e NADA ficava gravado. A tabela que deveria explicar era
+    // justamente a que ficava vazia no caso que precisa de explicação — e é a
+    // causa direta de "o agente não responde e não aparece erro em lugar
+    // nenhum".
+    const registrarFalhaDaChamada = async (erro: unknown, mensagemLog: string): Promise<void> => {
       await registrarFalha(db, {
         input,
         purpose,
@@ -536,20 +532,54 @@ export async function runModelCall(db: pg.Pool, cfg: LlmEdgeConfig, input: RunMo
         model,
         origem: decisao.origem,
         latencyMs: Date.now() - startedAt,
-        erro: err,
+        erro,
       }).catch(() => {
         // O log da falha não pode causar uma segunda falha. Se o próprio INSERT
         // de erro falhar, o erro ORIGINAL é o que interessa a quem chamou.
       });
-      deps.log?.error('llm: chamada falhou', {
+      deps.log?.error(mensagemLog, {
         organization_id: input.tenantId,
         purpose,
         provider: config.provider,
         model,
         origem_da_escolha: decisao.origem,
-        ...normalizarErro(err),
+        ...normalizarErro(erro),
       });
-      throw err;
+    };
+
+    try {
+      result = await chamarModelo(esforco);
+    } catch (err) {
+      // ─── FALLBACK: reasoning_effort recusado pelo modelo ────────────────────
+      //
+      // O valor suportado de reasoning_effort é "model-dependent" (doc oficial
+      // da OpenAI) e a regra já INVERTEU entre famílias — gpt-5.4-mini rejeita
+      // `minimal`, GPT-6 Astra rejeita `none`. Perseguir isso por regex de nome
+      // de modelo (`esforcoSuportadoPeloModelo`) é manutenção sem fim a cada
+      // lançamento novo. Se o provider recusou especificamente o EFFORT que
+      // mandamos, tenta UMA vez sem mandar o parâmetro (cai no default do
+      // provider) antes de derrubar o turno inteiro.
+      if (esforco !== undefined && ehErroDeReasoningEffortNaoSuportado(err)) {
+        deps.log?.warn('llm: reasoning_effort recusado pelo modelo, retentando sem o parâmetro', {
+          organization_id: input.tenantId,
+          purpose,
+          provider: config.provider,
+          model,
+          esforco_recusado: esforco,
+        });
+        try {
+          result = await chamarModelo(undefined);
+        } catch (err2) {
+          await registrarFalhaDaChamada(err2, 'llm: chamada falhou (mesmo sem reasoning_effort)');
+          throw err2;
+        }
+      } else {
+        // Grava e RELANÇA: quem chama continua decidindo o que fazer com a
+        // falha (o worker reagenda, o dry-run mostra na tela). Engolir aqui
+        // trocaria uma falha invisível por uma silenciosa, que é pior.
+        await registrarFalhaDaChamada(err, 'llm: chamada falhou');
+        throw err;
+      }
     }
     const latencyMs = Date.now() - startedAt;
 
@@ -626,6 +656,36 @@ export async function runModelCall(db: pg.Pool, cfg: LlmEdgeConfig, input: RunMo
     // em voo aqui, sempre.
     releaseInFlight(input.jobId, reservedCents);
   }
+}
+
+/**
+ * O provider recusou especificamente o VALOR de reasoning_effort que
+ * mandamos — não qualquer 400. Casar um 400 genérico (prompt inválido, tool
+ * malformada) faria o fallback de `run-model-call` repetir a chamada à toa em
+ * vez de falhar rápido no erro real.
+ *
+ * A mensagem observada em prod não cita `reasoning_effort` pelo nome (a
+ * OpenAI varia a frase por modelo — ver doc oficial "supported values are
+ * model-dependent"): `"Unsupported value: 'minimal' is not supported with
+ * the 'gpt-5.4-mini' model. Supported values are: 'none', 'low', 'medium',
+ * 'high', and 'xhigh'."`. Por isso o casamento é por FORMATO da frase
+ * ("unsupported value" + "model" + um dos níveis de esforço conhecidos) e não
+ * pela palavra `reasoning`, com essa como alternativa quando o provider FOR
+ * explícito (ex.: erro do GPT-6 Astra, que cita "reasoning effort" na frase).
+ */
+function ehErroDeReasoningEffortNaoSuportado(err: unknown): boolean {
+  const status =
+    (err as { statusCode?: number; status?: number })?.statusCode ??
+    (err as { statusCode?: number; status?: number })?.status ??
+    null;
+  if (status !== 400) return false;
+  const bruto = err instanceof Error ? err.message : String(err);
+  if (/reasoning[._ -]?effort/i.test(bruto)) return true;
+  return (
+    /unsupported value/i.test(bruto) &&
+    /\bmodel\b/i.test(bruto) &&
+    /\b(none|minimal|low|medium|high|xhigh|max)\b/i.test(bruto)
+  );
 }
 
 /**
